@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Pipeline Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .video-container {
+            display: flex;
+            gap: 20px;
+            margin: 20px 0;
+            justify-content: center;
+        }
+        .video-box {
+            text-align: center;
+        }
+        video {
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            background: #000;
+        }
+        .controls {
+            text-align: center;
+            margin: 20px 0;
+        }
+        button {
+            padding: 12px 24px;
+            margin: 0 10px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .start-btn {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .start-btn:hover {
+            background-color: #45a049;
+        }
+        .stop-btn {
+            background-color: #f44336;
+            color: white;
+        }
+        .stop-btn:hover {
+            background-color: #da190b;
+        }
+        .status {
+            text-align: center;
+            margin: 20px 0;
+            padding: 10px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .messages {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            height: 200px;
+            overflow-y: auto;
+            background-color: #f9f9f9;
+            font-family: monospace;
+            margin-top: 20px;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        .message.sent {
+            background-color: #e3f2fd;
+            text-align: right;
+        }
+        .message.received {
+            background-color: #f1f8e9;
+        }
+        .message.system {
+            background-color: #fff3e0;
+            font-style: italic;
+        }
+        .data-controls {
+            margin: 20px 0;
+            text-align: center;
+        }
+        input[type="text"] {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 300px;
+            margin-right: 10px;
+        }
+        .send-btn {
+            background-color: #2196F3;
+            color: white;
+            padding: 8px 16px;
+        }
+        .send-btn:hover {
+            background-color: #1976D2;
+        }
+        .config {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f0f0f0;
+            border-radius: 5px;
+        }
+        .config label {
+            display: block;
+            margin: 10px 0 5px 0;
+            font-weight: bold;
+        }
+        .config input {
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            width: 200px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌐 WebRTC Pipeline Client</h1>
+        
+        <div class="config">
+            <label for="serverUrl">Server WebSocket URL:</label>
+            <input type="text" id="serverUrl" value="ws://localhost:8080/ws">
+        </div>
+        
+        <div class="video-container">
+            <div class="video-box">
+                <h3>Local Video</h3>
+                <video id="localVideo" autoplay muted width="320" height="240"></video>
+            </div>
+            <div class="video-box">
+                <h3>Remote Video/Audio</h3>
+                <video id="remoteVideo" autoplay width="320" height="240"></video>
+                <audio id="remoteAudio" autoplay controls style="width: 320px; margin-top: 10px;"></audio>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button id="startBtn" class="start-btn">🎥 Start Call</button>
+            <button id="stopBtn" class="stop-btn" disabled>🛑 Stop Call</button>
+        </div>
+        
+        <div id="status" class="status disconnected">📡 Disconnected</div>
+        
+        <div class="data-controls">
+            <input type="text" id="messageInput" placeholder="Type a message to send via data channel..." disabled>
+            <button id="sendBtn" class="send-btn" disabled>📤 Send</button>
+        </div>
+        
+        <div class="messages" id="messages">
+            <div class="message system">💬 Messages will appear here...</div>
+        </div>
+    </div>
+
+    <script>
+        // DOM elements
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const remoteAudio = document.getElementById('remoteAudio');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const status = document.getElementById('status');
+        const messages = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const serverUrl = document.getElementById('serverUrl');
+
+        // WebRTC and WebSocket variables
+        let pc = null;
+        let ws = null;
+        let localStream = null;
+        let dataChannel = null;
+
+        // Event listeners
+        startBtn.onclick = start;
+        stopBtn.onclick = stop;
+        sendBtn.onclick = sendMessage;
+        messageInput.onkeypress = (e) => {
+            if (e.key === 'Enter') sendMessage();
+        };
+
+        // Utility functions
+        function addMessage(text, type = 'system') {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            messageDiv.textContent = `${new Date().toLocaleTimeString()} - ${text}`;
+            messages.appendChild(messageDiv);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function updateStatus(text, connected = false) {
+            status.textContent = text;
+            status.className = `status ${connected ? 'connected' : 'disconnected'}`;
+        }
+
+        function updateControls(started = false) {
+            startBtn.disabled = started;
+            stopBtn.disabled = !started;
+            messageInput.disabled = !started || !dataChannel || dataChannel.readyState !== 'open';
+            sendBtn.disabled = !started || !dataChannel || dataChannel.readyState !== 'open';
+        }
+
+        async function start() {
+            try {
+                addMessage('🚀 Starting WebRTC connection...');
+                
+                // Get user media
+                addMessage('📹 Requesting camera and microphone access...');
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 320, height: 240 },
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                localVideo.srcObject = localStream;
+                addMessage('✅ Camera and microphone access granted');
+
+                // Create peer connection
+                addMessage('🔗 Creating peer connection...');
+                pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                });
+
+                // Add local tracks to peer connection
+                localStream.getTracks().forEach(track => {
+                    pc.addTrack(track, localStream);
+                    addMessage(`📡 Added ${track.kind} track to connection`);
+                });
+
+                // Handle remote tracks
+                pc.ontrack = (event) => {
+                    addMessage('📺 Received remote track: ' + event.track.kind);
+                    if (event.streams && event.streams[0]) {
+                        if (event.track.kind === 'audio') {
+                            // For audio tracks, use the dedicated audio element
+                            addMessage('🔊 Setting up remote audio stream...');
+                            remoteAudio.srcObject = event.streams[0];
+                            // Ensure audio plays (unmute if needed)
+                            remoteAudio.muted = false;
+                            remoteAudio.volume = 1.0;
+                            addMessage('🔊 Remote audio track ready for playback');
+                            
+                            // Also add to video element for fallback
+                            if (!remoteVideo.srcObject) {
+                                remoteVideo.srcObject = event.streams[0];
+                                remoteVideo.muted = false;
+                            }
+                        } else {
+                            // For video tracks
+                            remoteVideo.srcObject = event.streams[0];
+                        }
+                    }
+                };
+
+                // Handle ICE candidates
+                pc.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        ws.send(JSON.stringify({
+                            type: 'ice-candidate',
+                            candidate: event.candidate
+                        }));
+                    }
+                };
+
+                // Handle connection state changes
+                pc.onconnectionstatechange = () => {
+                    addMessage(`🔗 Connection state: ${pc.connectionState}`);
+                    if (pc.connectionState === 'connected') {
+                        updateStatus('🟢 Connected', true);
+                    } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                        updateStatus('🔴 Connection failed', false);
+                    }
+                };
+
+                // Create data channel for messaging
+                dataChannel = pc.createDataChannel('messages', { ordered: true });
+                
+                dataChannel.onopen = () => {
+                    addMessage('📡 Data channel opened');
+                    dataChannel.send(JSON.stringify({
+                        type: 'greeting',
+                        message: 'Hello from WebRTC client!'
+                    }));
+                    updateControls(true);
+                };
+
+                dataChannel.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        
+                        if (data.type === 'text_response') {
+                            // Handle text response
+                            addMessage(`💬 Server: ${data.text}`, 'received');
+                        } else {
+                            // Handle other messages
+                            addMessage(`Server: ${data.message || JSON.stringify(data)}`, 'received');
+                        }
+                    } catch (e) {
+                        addMessage(`Server: ${event.data}`, 'received');
+                    }
+                };
+
+                dataChannel.onclose = () => {
+                    addMessage('📡 Data channel closed');
+                    updateControls(false);
+                };
+
+                // Connect WebSocket for signaling
+                addMessage('🌐 Connecting to signaling server...');
+                ws = new WebSocket(serverUrl.value);
+                
+                ws.onopen = () => {
+                    addMessage('✅ WebSocket connected');
+                    updateStatus('🟡 Connecting...', false);
+                };
+
+                ws.onclose = () => {
+                    addMessage('❌ WebSocket disconnected');
+                    updateStatus('🔴 Disconnected', false);
+                };
+
+                ws.onerror = (error) => {
+                    addMessage('❌ WebSocket error: ' + error);
+                    updateStatus('🔴 WebSocket Error', false);
+                };
+
+                ws.onmessage = async (event) => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        
+                        if (message.type === 'answer') {
+                            addMessage('📥 Received answer from server');
+                            await pc.setRemoteDescription(new RTCSessionDescription(message));
+                        } else if (message.type === 'ice-candidate') {
+                            addMessage('🧊 Received ICE candidate');
+                            await pc.addIceCandidate(message.candidate);
+                        } else if (message.type === 'error') {
+                            addMessage('❌ Server error: ' + message.message);
+                        }
+                    } catch (e) {
+                        addMessage('❌ Error processing signaling message: ' + e.message);
+                    }
+                };
+
+                // Wait for WebSocket to be ready
+                await new Promise((resolve, reject) => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        resolve();
+                    } else {
+                        ws.onopen = resolve;
+                        ws.onerror = reject;
+                        setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000);
+                    }
+                });
+
+                // Create and send offer
+                addMessage('📤 Creating offer...');
+                const offer = await pc.createOffer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: true
+                });
+                await pc.setLocalDescription(offer);
+
+                ws.send(JSON.stringify({
+                    type: 'offer',
+                    sdp: offer.sdp
+                }));
+                addMessage('📤 Offer sent to server');
+
+                updateControls(true);
+
+            } catch (error) {
+                addMessage('❌ Error starting call: ' + error.message);
+                updateStatus('🔴 Error', false);
+                updateControls(false);
+            }
+        }
+
+        async function stop() {
+            addMessage('🛑 Stopping call...');
+
+            // Close data channel
+            if (dataChannel) {
+                dataChannel.close();
+                dataChannel = null;
+            }
+
+            // Stop local tracks
+            if (localStream) {
+                localStream.getTracks().forEach(track => {
+                    track.stop();
+                    addMessage(`⏹️ Stopped ${track.kind} track`);
+                });
+                localStream = null;
+                localVideo.srcObject = null;
+            }
+
+            // Close peer connection
+            if (pc) {
+                pc.close();
+                pc = null;
+                addMessage('🔗 Peer connection closed');
+            }
+
+            // Close WebSocket
+            if (ws) {
+                ws.send(JSON.stringify({ type: 'close' }));
+                ws.close();
+                ws = null;
+                addMessage('🌐 WebSocket closed');
+            }
+
+            // Clear remote video
+            remoteVideo.srcObject = null;
+
+            updateStatus('🔴 Disconnected', false);
+            updateControls(false);
+            addMessage('✅ Call stopped');
+        }
+
+        function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message || !dataChannel || dataChannel.readyState !== 'open') {
+                return;
+            }
+
+            try {
+                const data = {
+                    type: 'message',
+                    message: message,
+                    timestamp: Date.now()
+                };
+                dataChannel.send(JSON.stringify(data));
+                addMessage(`You: ${message}`, 'sent');
+                messageInput.value = '';
+            } catch (error) {
+                addMessage('❌ Error sending message: ' + error.message);
+            }
+        }
+
+        // Initialize UI
+        updateControls(false);
+        addMessage('🏁 WebRTC client ready. Configure server URL and click "Start Call".');
+    </script>
+</body>
+</html>
