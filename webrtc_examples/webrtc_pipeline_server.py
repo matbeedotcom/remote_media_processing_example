@@ -156,11 +156,16 @@ from remotemedia.core.pipeline import Pipeline
 from remotemedia.core.node import RemoteExecutorConfig, Node
 from remotemedia.nodes.audio import AudioTransform, VoiceActivityDetector
 from remotemedia.nodes.ml import UltravoxNode
-from kokoro_tts import KokoroTTSNode
 from remotemedia.nodes.transform import TextTransformNode
 from remotemedia.nodes.remote import RemoteObjectExecutionNode
 from remotemedia.nodes import PassThroughNode
 from remotemedia.webrtc import WebRTCServer, WebRTCConfig
+
+# Import from parent directory audio_examples
+sys.path.insert(0, str(Path(__file__).parent.parent / "audio_examples"))
+from kokoro_tts import KokoroTTSNode
+
+# Import from current directory
 from vad_ultravox_nodes import (
     VADTriggeredBuffer, UltravoxMinDurationWrapper, AudioOutputNode, 
     TextLoggingNode, VADLoggingNode, UltravoxImmediateProcessor, MessageLoggingNode
