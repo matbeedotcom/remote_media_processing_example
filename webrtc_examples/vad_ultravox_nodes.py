@@ -27,11 +27,16 @@ class VADTriggeredBuffer(Node):
     
     This node:
     1. Maintains a rolling buffer of the past 1 second of audio (pre-speech context)
-    2. Accumulates audio chunks that contain speech
+    2. Accumulates audio chunks during speech segments
     3. Tracks speech/silence state transitions
     4. Outputs accumulated speech audio only when:
        - Speech ends (VAD transitions to silence for sufficient duration)
        - At least minimum duration of speech was accumulated
+       - Speech was continuous (no long gaps)
+    
+    The buffer will discard the entire utterance if speech is interrupted by
+    silence that exceeds max_silence_gap_s, ensuring only continuous speech
+    segments trigger the voice assistant.
     """
     
     def __init__(
@@ -40,6 +45,7 @@ class VADTriggeredBuffer(Node):
         max_speech_duration_s: float = 10.0,
         silence_duration_s: float = 0.5,
         pre_speech_buffer_s: float = 1.0,
+        max_silence_gap_s: float = 1.5,
         sample_rate: int = 16000,
         **kwargs
     ):
@@ -51,6 +57,7 @@ class VADTriggeredBuffer(Node):
             max_speech_duration_s: Maximum speech duration (forces trigger, default: 10.0s)
             silence_duration_s: Duration of silence needed to confirm speech end (default: 0.5s)
             pre_speech_buffer_s: Duration of audio to buffer before speech starts (default: 1.0s)
+            max_silence_gap_s: Maximum allowed silence gap within speech before discarding (default: 1.5s)
             sample_rate: Expected audio sample rate (default: 16000)
         """
         super().__init__(**kwargs)
@@ -58,6 +65,7 @@ class VADTriggeredBuffer(Node):
         self.max_speech_duration_s = max_speech_duration_s
         self.silence_duration_s = silence_duration_s
         self.pre_speech_buffer_s = pre_speech_buffer_s
+        self.max_silence_gap_s = max_silence_gap_s
         self.sample_rate = sample_rate
         self.is_streaming = True
         
@@ -73,6 +81,7 @@ class VADTriggeredBuffer(Node):
         self.max_samples = int(max_speech_duration_s * sample_rate)
         self.silence_samples = int(silence_duration_s * sample_rate)
         self.pre_speech_samples = int(pre_speech_buffer_s * sample_rate)
+        self.max_silence_gap_samples = int(max_silence_gap_s * sample_rate)
         
     async def process(self, data_stream: AsyncGenerator[Any, None]) -> AsyncGenerator[Tuple[np.ndarray, int, dict], None]:
         """
@@ -222,6 +231,15 @@ class VADTriggeredBuffer(Node):
         silence_duration_s = self._silence_accumulated_samples / self.sample_rate
         
         logger.debug(f"VADTriggeredBuffer: Accumulated {silence_duration_s:.2f}s of silence (need {self.silence_duration_s:.2f}s)")
+        
+        # Check if silence gap exceeds maximum allowed - speech is not continuous
+        if self._silence_accumulated_samples >= self.max_silence_gap_samples:
+            logger.warning(
+                f"VADTriggeredBuffer: Silence gap too long ({silence_duration_s:.2f}s >= {self.max_silence_gap_s}s), "
+                f"discarding non-continuous speech"
+            )
+            self._reset_state()
+            return None
         
         # Check if we have enough silence to confirm speech end
         if self._silence_accumulated_samples >= self.silence_samples:

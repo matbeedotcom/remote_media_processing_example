@@ -236,6 +236,7 @@ def create_speech_to_speech_pipeline(remote_host: str = "127.0.0.1") -> Pipeline
         min_speech_duration_s=1.0,    # Minimum 1.0s of speech before triggering
         silence_duration_s=0.5,       # 500ms of silence to confirm speech end
         pre_speech_buffer_s=1.0,      # 1s of pre-speech context
+        max_silence_gap_s=1.5,        # Max 1.5s silence gap allowed within speech
         sample_rate=16000,
         name="VADTriggeredBuffer"
     )
