@@ -1,0 +1,5 @@
+# Requirements for Remote Class Execution Demo
+numpy>=1.24.0
+asyncio
+# The remotemedia package should be installed from the parent directory:
+# pip install -e ../..

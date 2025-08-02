@@ -43,7 +43,7 @@ from remotemedia.nodes.audio import AudioTransform, VoiceActivityDetector
 from remotemedia.nodes.remote import RemoteObjectExecutionNode
 from remotemedia.nodes.ml import UltravoxNode, KokoroTTSNode
 from remotemedia.nodes import PassThroughNode
-from vad_ultravox_nodes import VADTriggeredBuffer, UltravoxMinDurationWrapper, AudioOutputNode, TextLoggingNode
+from remote_media_processing_example.webrtc_examples.vad_ultravox_nodes import VADTriggeredBuffer, UltravoxMinDurationWrapper, AudioOutputNode, TextLoggingNode
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

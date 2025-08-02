@@ -246,7 +246,9 @@ def create_speech_to_speech_pipeline(remote_host: str = "127.0.0.1") -> Pipeline
             "You are a helpful assistant. Listen to what the user says and respond "
             "appropriately and concisely. Keep responses under 2 sentences."
         ),
-        name="UltravoxNode"
+        name="UltravoxNode",
+        enable_conversation_history=True,
+        conversation_history_minutes=5.0  # Keep 5 minutes of conversation history
     )
 
     remote_ultravox = RemoteObjectExecutionNode(

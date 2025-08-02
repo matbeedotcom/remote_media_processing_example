@@ -74,12 +74,15 @@ class VADTriggeredBuffer(Node):
         self.silence_samples = int(silence_duration_s * sample_rate)
         self.pre_speech_samples = int(pre_speech_buffer_s * sample_rate)
         
-    async def process(self, data_stream: AsyncGenerator[Any, None]) -> AsyncGenerator[Tuple[np.ndarray, int], None]:
+    async def process(self, data_stream: AsyncGenerator[Any, None]) -> AsyncGenerator[Tuple[np.ndarray, int, dict], None]:
         """
         Process VAD-annotated audio stream and trigger output on speech end.
         
         Expected input: ((audio_data, sample_rate), vad_metadata) tuples
         """
+        # Store original metadata to preserve session_id and other data
+        original_metadata = {}
+        
         async for data in data_stream:
             # Debug the data format
             logger.debug(f"VADTriggeredBuffer: Received data type: {type(data)}")
@@ -96,6 +99,13 @@ class VADTriggeredBuffer(Node):
                 if isinstance(item1, tuple) and len(item1) == 2:
                     audio_data, sample_rate = item1
                     vad_metadata = item2
+                    # Store original metadata from the VAD metadata
+                    if 'original_metadata' in vad_metadata:
+                        original_metadata = vad_metadata['original_metadata'].copy()
+                    elif not original_metadata:  # Only update if we don't have metadata yet
+                        # Extract session_id and other metadata from VAD metadata
+                        original_metadata = {k: v for k, v in vad_metadata.items() 
+                                           if k not in ['is_speech', 'speech_ratio', 'avg_energy', 'frame_count']}
                 else:
                     logger.warning(f"VADTriggeredBuffer: Expected (audio_data, sample_rate) tuple, got {type(item1)}")
                     continue
@@ -134,7 +144,7 @@ class VADTriggeredBuffer(Node):
                         f"VADTriggeredBuffer: Triggering on max duration "
                         f"({len(triggered_audio)/self.sample_rate:.2f}s total audio)"
                     )
-                    yield (triggered_audio.reshape(1, -1), self.sample_rate)
+                    yield (triggered_audio.reshape(1, -1), self.sample_rate, original_metadata)
             else:
                 # Check if we should trigger on silence
                 triggered_audio = await self._handle_silence_chunk(audio_flat, chunk_samples)
@@ -143,7 +153,7 @@ class VADTriggeredBuffer(Node):
                         f"VADTriggeredBuffer: Triggering on speech end "
                         f"({len(triggered_audio)/self.sample_rate:.2f}s total audio)"
                     )
-                    yield (triggered_audio.reshape(1, -1), self.sample_rate)
+                    yield (triggered_audio.reshape(1, -1), self.sample_rate, original_metadata)
                     
     def _maintain_pre_speech_buffer(self, audio_chunk: np.ndarray):
         """Maintain a rolling buffer of pre-speech audio."""
@@ -278,18 +288,25 @@ class UltravoxMinDurationWrapper(Node):
         """Filter out audio chunks that are too short."""
         async def filtered_stream():
             async for data in data_stream:
-                if isinstance(data, tuple) and len(data) == 2:
-                    audio_data, sample_rate = data
+                if isinstance(data, tuple) and len(data) >= 2:
+                    audio_data = data[0]
+                    sample_rate = data[1]
+                    metadata = data[2] if len(data) > 2 else {}
+                    
                     if isinstance(audio_data, np.ndarray):
                         duration_s = audio_data.size / sample_rate
                         if duration_s >= self.min_duration_s:
                             logger.info(f"UltravoxWrapper: Processing {duration_s:.2f}s of audio (≥{self.min_duration_s:.2f}s minimum)")
+                            # Preserve all parts of the tuple including metadata
                             yield data
                         else:
                             logger.warning(f"UltravoxWrapper: Rejecting {duration_s:.2f}s of audio (< {self.min_duration_s:.2f}s minimum)")
                             continue
+                    else:
+                        # Pass through non-audio data
+                        yield data
                 else:
-                    # Pass through non-audio data
+                    # Pass through non-tuple data
                     yield data
                     
         async for result in self.ultravox_node.process(filtered_stream()):
@@ -309,8 +326,11 @@ class AudioOutputNode(Node):
     async def process(self, data_stream):
         """Process audio chunks and save them."""
         async for data in data_stream:
-            if isinstance(data, tuple) and len(data) == 2:
-                audio_data, sample_rate = data
+            if isinstance(data, tuple) and len(data) >= 2:
+                audio_data = data[0]
+                sample_rate = data[1]
+                metadata = data[2] if len(data) > 2 else {}
+                
                 if isinstance(audio_data, np.ndarray):
                     # Save the audio chunk
                     self.response_count += 1
@@ -332,6 +352,10 @@ class AudioOutputNode(Node):
                     
                     duration_s = len(audio_to_save) / sample_rate
                     logger.info(f"🔊 SAVED AUDIO: {output_file} ({duration_s:.2f}s, {sample_rate}Hz)")
+                    
+                    # Log session info if available
+                    if metadata and 'session_id' in metadata:
+                        logger.info(f"  Session ID: {metadata['session_id']}")
                     
                     # Also print text if available
                     print(f"🎵 Generated audio response #{self.response_count}: {duration_s:.2f}s")
@@ -423,8 +447,11 @@ class UltravoxImmediateProcessor(Node):
     async def process(self, data_stream):
         """Process complete utterances immediately."""
         async for data in data_stream:
-            if isinstance(data, tuple) and len(data) == 2:
-                audio_data, sample_rate = data
+            if isinstance(data, tuple) and len(data) >= 2:
+                audio_data = data[0]
+                sample_rate = data[1]
+                metadata = data[2] if len(data) > 2 else {}
+                
                 if isinstance(audio_data, np.ndarray):
                     duration_s = audio_data.size / sample_rate
                     if duration_s >= self.min_duration_s:
@@ -439,7 +466,8 @@ class UltravoxImmediateProcessor(Node):
                             response = await self.ultravox_node._generate_response(audio_flat)
                             if response:
                                 logger.info(f"UltravoxProcessor: Generated response for {duration_s:.2f}s utterance")
-                                yield (response,)
+                                # Include metadata with response
+                                yield (response, metadata)
                         else:
                             logger.error("UltravoxProcessor: Pipeline not initialized")
                     else:

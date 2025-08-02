@@ -1,211 +1,183 @@
-# Remote Media Processing Test Project
+# RemoteMedia Processing Examples
 
-A real-time speech-to-speech pipeline using WebRTC, voice activity detection (VAD), speech recognition (Ultravox), and text-to-speech synthesis (Kokoro TTS).
+A comprehensive collection of examples demonstrating the RemoteMedia Processing SDK capabilities, including distributed processing, real-time audio/video handling, and transparent remote execution.
 
-## Overview
+## Directory Structure
 
-This project demonstrates a complete audio processing pipeline that:
-- Receives audio streams via WebRTC
-- Detects speech segments using VAD
-- Transcribes speech to text using Ultravox
-- Synthesizes responses using Kokoro TTS
-- Streams audio back to the client in real-time
-
-## Features
-
-- **Real-time WebRTC streaming** - Low-latency audio/video communication
-- **Voice Activity Detection** - Intelligent speech/silence detection
-- **Speech Recognition** - Ultravox model for accurate transcription
-- **Text-to-Speech** - High-quality Kokoro TTS synthesis
-- **Streaming architecture** - Processes audio in chunks for responsiveness
-- **Remote execution** - Supports distributed processing via RemoteMedia framework
-
-## Installation
-
-### Prerequisites
-
-- Python 3.8+
-- Linux/macOS (for espeak-ng support)
-- RemoteMedia framework
-
-### Basic Installation
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd remote_media_processing_test_project
-
-# Install WebRTC dependencies
-pip install aiortc aiohttp aiohttp-cors
-
-# Install TTS dependencies
-pip install kokoro>=0.9.4 soundfile
-
-# Install espeak (required for Kokoro TTS)
-# Ubuntu/Debian:
-sudo apt-get install espeak-ng
-# macOS:
-brew install espeak
 ```
-
-### ML Dependencies (Optional)
-
-For speech recognition features:
-```bash
-pip install -r requirements-ml.txt
+remote_media_processing_example/
+├── proxy_examples/          # Remote proxy and transparent execution examples
+├── audio_examples/          # Audio processing, speech recognition, and TTS
+├── webrtc_examples/         # Real-time WebRTC communication examples
+├── remote_class_execution_demo/  # Advanced remote class execution demos
+├── assets/                  # Resource files
+│   ├── audio/              # Sample audio files
+│   └── generated/          # Generated output files
+└── requirements.txt        # Python dependencies
 ```
 
 ## Quick Start
 
-### 1. Start the Remote Service (if using remote execution)
+### 1. Install Dependencies
+
 ```bash
-PYTHONPATH=. python remote_service/src/server.py
+# Basic installation
+pip install -r requirements.txt
+
+# With ML features (speech recognition, TTS)
+pip install -e ".[ml]"
 ```
 
-### 2. Run the WebRTC Server
+### 2. Start Remote Service (Required for Remote Examples)
+
 ```bash
-# Basic server
-python webrtc_pipeline_server.py
-
-# With ML features enabled
-USE_ML=true python webrtc_pipeline_server.py
+cd ../remote_media_processing/remote_service
+docker-compose up
 ```
 
-### 3. Connect a Client
-Open your browser and navigate to:
-```
-http://localhost:8080/webrtc_client.html
-```
+### 3. Run Examples
 
-## Usage Examples
+Choose from the categorized examples below.
 
-### WebRTC Server with Custom Configuration
+## Example Categories
+
+### 🔌 Remote Proxy Examples (`proxy_examples/`)
+
+Demonstrate transparent remote execution of Python objects without modification.
+
+**Basic Examples:**
+- `minimal_proxy.py` - Minimal proxy usage
+- `simplest_proxy.py` - Simplest implementation
+- `ultra_simple_proxy.py` - Ultra-simple demonstration
+
+**Advanced Examples:**
+- `simple_remote_proxy.py` - Various object types
+- `remote_proxy_example.py` - Full-featured with counters and processors
+- `generator_streaming_comparison.py` - Generator streaming approaches
+- `streaming_solution.py` - Complete streaming with generators
+
 ```bash
-# Custom host and port
-SERVER_HOST=0.0.0.0 SERVER_PORT=8081 python webrtc_pipeline_server.py
-
-# Connect to remote ML service
-REMOTE_HOST=192.168.1.100 USE_ML=true python webrtc_pipeline_server.py
+cd proxy_examples
+python minimal_proxy.py
 ```
 
-### Standalone Pipeline Testing
+### 🎤 Audio Processing Examples (`audio_examples/`)
+
+Speech recognition, text-to-speech, and audio processing pipelines.
+
+**Examples:**
+- `kokoro_tts.py` - Text-to-Speech synthesis
+- `vad_ultravox_nodes.py` - Voice Activity Detection + Speech Recognition
+- `vad_ultravox_kokoro_streaming.py` - Complete speech-to-speech pipeline
+
 ```bash
-# Test the speech-to-speech pipeline with a local audio file
+cd audio_examples
 python vad_ultravox_kokoro_streaming.py
 ```
 
-## Architecture
+### 🌐 WebRTC Examples (`webrtc_examples/`)
 
-### Pipeline Flow
+Real-time audio/video communication with WebRTC.
 
-```
-Audio Input (WebRTC/File)
-    ↓
-Audio Transform (16kHz, mono)
-    ↓
-Voice Activity Detection
-    ↓
-VAD-Triggered Buffer
-    ↓
-Speech Recognition (Ultravox)
-    ↓
-Text-to-Speech (Kokoro TTS)
-    ↓
-Audio Output (WebRTC/File)
+**Components:**
+- `webrtc_pipeline_server.py` - WebRTC server with audio pipeline
+- `webrtc_client.html` - Browser-based client
+
+```bash
+cd webrtc_examples
+# Basic server
+python webrtc_pipeline_server.py
+
+# With ML features
+USE_ML=true python webrtc_pipeline_server.py
 ```
 
-### Key Components
+Open browser: `http://localhost:8080/webrtc_client.html`
 
-- **webrtc_pipeline_server.py** - WebRTC server with pipeline integration
-- **vad_ultravox_nodes.py** - Custom pipeline nodes for VAD and buffering
-- **kokoro_tts.py** - TTS synthesis node wrapper
-- **vad_ultravox_kokoro_streaming.py** - Standalone pipeline example
+### 🚀 Advanced Remote Execution (`remote_class_execution_demo/`)
 
-### Configuration Parameters
+Advanced demonstrations of remote class execution with pip package installation.
 
-- **VAD Settings**:
-  - Frame duration: 30ms
-  - Energy threshold: 0.02
-  - Speech threshold: 0.3
-  - Minimum speech duration: 1.0s
-  - Silence duration for end detection: 0.5s
+**Examples:**
+- `demo_with_pip_packages.py` - Remote execution with automatic pip installs
+- `simple_pip_example.py` - Basic pip package usage
+- Various test scenarios for edge cases
 
-- **Audio Settings**:
-  - Processing sample rate: 16kHz
-  - TTS output sample rate: 24kHz
-  - Pre-speech buffer: 1.0s
+```bash
+cd remote_class_execution_demo
+./run_demo.sh
+```
 
-## API Endpoints
+## Key Features Demonstrated
 
-- WebSocket signaling: `ws://localhost:8080/ws`
-- Health check: `http://localhost:8080/health`
-- Active connections: `http://localhost:8080/connections`
-- Web client: `http://localhost:8080/webrtc_client.html`
+### 1. **Transparent Remote Execution**
+- Execute any Python object remotely without modification
+- Maintain object state across method calls
+- Support for sync/async methods and generators
 
-## Output
+### 2. **Audio/Speech Processing**
+- Real-time Voice Activity Detection (VAD)
+- Speech-to-Text with Ultravox
+- Text-to-Speech with Kokoro TTS
+- Streaming audio pipelines
 
-- **WebRTC mode**: Audio streamed directly to connected clients
-- **Standalone mode**: Audio files saved to `generated_responses/` directory
+### 3. **WebRTC Integration**
+- Low-latency audio/video streaming
+- Browser-based clients
+- Real-time processing pipelines
+
+### 4. **Package Management**
+- Automatic pip package installation
+- Virtual environment isolation
+- Dependency resolution
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `USE_ML` | Enable ML features | `false` |
-| `REMOTE_HOST` | Remote service host | `127.0.0.1` |
+| `USE_ML` | Enable ML features (requires ML deps) | `false` |
+| `REMOTE_HOST` | Remote service host | `localhost` |
+| `REMOTE_PORT` | Remote service port | `50052` |
 | `SERVER_HOST` | WebRTC server host | `0.0.0.0` |
 | `SERVER_PORT` | WebRTC server port | `8080` |
 
+## Requirements
+
+### System Requirements
+- Python 3.8+
+- Linux/macOS (for audio processing)
+- Docker (for remote service)
+
+### Audio Processing Requirements
+```bash
+# Ubuntu/Debian
+sudo apt-get install espeak-ng
+
+# macOS
+brew install espeak
+```
+
 ## Troubleshooting
 
-### Common Issues
+### Remote Service Issues
+- Ensure Docker is running
+- Check port 50052 is available
+- Verify service logs: `docker-compose logs -f`
 
-1. **ML dependencies not found**
-   - Install with: `pip install -r requirements-ml.txt`
-   - Set `USE_ML=true` when running
+### Audio/ML Issues
+- Install ML dependencies: `pip install -e ".[ml]"`
+- Ensure espeak is installed for TTS
+- Check GPU availability for ML models
 
-2. **Kokoro TTS errors**
-   - Ensure espeak is installed: `sudo apt-get install espeak-ng`
-   - Verify Kokoro version: `pip install kokoro>=0.9.4`
-
-3. **Remote service connection failed**
-   - Start remote service first: `PYTHONPATH=. python remote_service/src/server.py`
-   - Check `REMOTE_HOST` environment variable
-
-4. **WebRTC connection issues**
-   - Ensure ports are not blocked by firewall
-   - Try different STUN servers if needed
-
-## Development
-
-### Running Tests
-```bash
-# Run unit tests (if available)
-python -m pytest tests/
-
-# Test with example audio
-python vad_ultravox_kokoro_streaming.py
-```
-
-### Debugging
-Enable debug logging:
-```bash
-export PYTHONPATH=.
-export LOG_LEVEL=DEBUG
-python webrtc_pipeline_server.py
-```
+### WebRTC Issues
+- Use Chrome/Firefox for best compatibility
+- Check firewall settings for ports 8080
+- Enable microphone permissions in browser
 
 ## License
 
-This is a test project. Please refer to the license file for details.
+See the main project LICENSE file for details.
 
 ## Contributing
 
-This is a test/example project. Feel free to fork and modify for your own use cases.
-
-## Acknowledgments
-
-- RemoteMedia framework for distributed processing
-- Ultravox for speech recognition
-- Kokoro TTS for speech synthesis
-- aiortc for WebRTC implementation
+These examples are designed to demonstrate SDK capabilities. Feel free to adapt them for your use cases.
