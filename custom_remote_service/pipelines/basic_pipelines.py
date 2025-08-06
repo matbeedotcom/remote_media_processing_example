@@ -31,25 +31,20 @@ def create_timestamped_math_pipeline() -> Pipeline:
         
     pipeline = Pipeline(name="timestamped_math")
     
-    # Add math processor
-    math_node = MathProcessorNode(
+    # Add nodes in sequence (data flows linearly)
+    pipeline.add_node(MathProcessorNode(
         operations=["square", "double"],
         handle_lists=True,
         name="math_processor"
-    )
-    pipeline.add_node(math_node)
+    ))
     
-    # Add timestamp node
-    timestamp_node = TimestampNode(
+    pipeline.add_node(TimestampNode(
         format="iso",
         include_metadata=True,
         name="timestamper"
-    )
-    pipeline.add_node(timestamp_node)
+    ))
     
-    # Connect nodes
-    pipeline.connect("math_processor", "timestamper")
-    
+    # No connect() needed - data flows: input -> math_processor -> timestamper -> output
     return pipeline
 
 
@@ -64,25 +59,20 @@ def create_aggregation_pipeline() -> Pipeline:
         
     pipeline = Pipeline(name="aggregation")
     
-    # Add aggregator
-    aggregator_node = DataAggregatorNode(
+    # Add nodes in sequence (data flows linearly)
+    pipeline.add_node(DataAggregatorNode(
         window_size=3,
         aggregation_type="collect",
         name="aggregator"
-    )
-    pipeline.add_node(aggregator_node)
+    ))
     
-    # Add timestamp node
-    timestamp_node = TimestampNode(
+    pipeline.add_node(TimestampNode(
         format="readable",
         include_metadata=True,
         name="timestamper"
-    )
-    pipeline.add_node(timestamp_node)
+    ))
     
-    # Connect nodes
-    pipeline.connect("aggregator", "timestamper")
-    
+    # No connect() needed - data flows: input -> aggregator -> timestamper -> output
     return pipeline
 
 
