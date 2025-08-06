@@ -11,6 +11,9 @@ audio and video streams through RemoteMedia pipelines in real-time.
 - Data channel communication
 - Multiple concurrent WebRTC connections
 - Integration with remote execution services
+- Pipeline Registry integration for discovery and reuse
+- Persistent pipeline storage across server restarts
+- JavaScript client access to registered pipelines
 
 **TO RUN THIS EXAMPLE:**
 
@@ -30,6 +33,20 @@ audio and video streams through RemoteMedia pipelines in real-time.
     - Open a WebRTC client application
     - Connect to ws://localhost:8080/ws for signaling
     - The server will process your audio/video streams through the pipeline
+
+**Pipeline Registry Integration:**
+
+The server automatically registers the WebRTC pipeline with the PipelineRegistry,
+making it discoverable and executable by JavaScript clients:
+
+    $ node nodejs-client/examples/discover-webrtc-pipeline.js
+
+Environment variables:
+- ENABLE_PERSISTENCE=true/false (default: true) - Enable pipeline persistence
+- USE_ML=true/false (default: false) - Enable ML features  
+- REMOTE_HOST=hostname (default: 127.0.0.1) - Remote execution host
+- SERVER_HOST=hostname (default: 0.0.0.0) - WebRTC server host
+- SERVER_PORT=port (default: 8080) - WebRTC server port
 
 **Example Client HTML:**
 Save this as 'client.html' and open in a browser:
@@ -149,17 +166,25 @@ import os
 import sys
 from pathlib import Path
 from typing import Optional
+import datetime
+import json
+import random
+import math
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from remotemedia.core.pipeline import Pipeline
 from remotemedia.core.node import RemoteExecutorConfig, Node
+from remotemedia.core.pipeline_registry import PipelineRegistry
+from remotemedia.remote.client import RemoteExecutionClient
+import grpc
 from remotemedia.nodes.audio import AudioTransform, VoiceActivityDetector
 from remotemedia.nodes.ml import UltravoxNode
 from remotemedia.nodes.transform import TextTransformNode
 from remotemedia.nodes.remote import RemoteObjectExecutionNode
 from remotemedia.nodes import PassThroughNode
 from remotemedia.webrtc import WebRTCServer, WebRTCConfig
+from remotemedia.persistence import AccessLevel
 
 # Import from parent directory audio_examples
 sys.path.insert(0, str(Path(__file__).parent.parent / "audio_examples"))
@@ -191,6 +216,236 @@ import logging
 logging.getLogger("Pipeline").setLevel(logging.ERROR)
 logging.getLogger("remotemedia.core.pipeline").setLevel(logging.ERROR)
 
+
+# Tool implementations
+async def get_current_time(timezone: str = "UTC", format: str = "24h") -> str:
+    """
+    Get the current time in the specified timezone.
+    
+    Args:
+        timezone: The timezone (e.g., "UTC", "EST", "PST", "GMT")
+        format: Time format - "24h" or "12h"
+    
+    Returns:
+        Current time as a string
+    """
+    now = datetime.datetime.now()
+    if format == "12h":
+        time_str = now.strftime("%I:%M:%S %p")
+    else:
+        time_str = now.strftime("%H:%M:%S")
+    
+    date_str = now.strftime("%Y-%m-%d")
+    return f"The current time is {time_str} on {date_str} ({timezone})"
+
+
+async def get_weather(location: str, unit: str = "celsius") -> str:
+    """
+    Get the current weather for a location.
+    
+    Args:
+        location: City name or location
+        unit: Temperature unit - "celsius" or "fahrenheit"
+    
+    Returns:
+        Weather information as a string
+    """
+    # This is a mock implementation - in production, you'd call a real weather API
+    weather_conditions = ["sunny", "partly cloudy", "cloudy", "rainy", "stormy"]
+    condition = random.choice(weather_conditions)
+    
+    if unit == "celsius":
+        temp = random.randint(15, 30)
+        unit_symbol = "°C"
+    else:
+        temp = random.randint(60, 85)
+        unit_symbol = "°F"
+    
+    humidity = random.randint(40, 80)
+    wind_speed = random.randint(5, 25)
+    
+    return (f"Weather in {location}: {condition}, {temp}{unit_symbol}, "
+            f"humidity {humidity}%, wind {wind_speed} km/h")
+
+
+async def calculate(expression: str) -> str:
+    """
+    Perform a mathematical calculation.
+    
+    Args:
+        expression: Mathematical expression to evaluate (e.g., "2 + 2", "sqrt(16)", "pi * 4")
+    
+    Returns:
+        The result of the calculation
+    """
+    try:
+        # Create a safe namespace with math functions
+        safe_dict = {
+            'sqrt': math.sqrt,
+            'sin': math.sin,
+            'cos': math.cos,
+            'tan': math.tan,
+            'pi': math.pi,
+            'e': math.e,
+            'log': math.log,
+            'log10': math.log10,
+            'pow': pow,
+            'abs': abs,
+            'round': round,
+            'floor': math.floor,
+            'ceil': math.ceil
+        }
+        
+        # Evaluate the expression safely
+        result = eval(expression, {"__builtins__": {}}, safe_dict)
+        return f"The result of {expression} is {result}"
+    except Exception as e:
+        return f"Error calculating {expression}: {str(e)}"
+
+
+async def search_web(query: str, num_results: int = 3) -> str:
+    """
+    Search the web for information.
+    
+    Args:
+        query: Search query
+        num_results: Number of results to return (max 5)
+    
+    Returns:
+        Search results as a string
+    """
+    # This is a mock implementation - in production, you'd use a real search API
+    mock_results = {
+        "python": "Python is a high-level programming language known for its simplicity and readability.",
+        "machine learning": "Machine learning is a subset of AI that enables systems to learn from data.",
+        "webrtc": "WebRTC is a technology that enables real-time communication in web browsers.",
+        "weather": "Weather refers to atmospheric conditions including temperature, precipitation, and wind.",
+        "news": "Latest news: Technology advances continue to shape the future of communication."
+    }
+    
+    # Find relevant mock result or provide generic response
+    query_lower = query.lower()
+    for key, value in mock_results.items():
+        if key in query_lower:
+            return f"Search results for '{query}': {value}"
+    
+    return f"Search results for '{query}': Found various articles and information about this topic."
+
+
+async def set_reminder(message: str, minutes_from_now: int) -> str:
+    """
+    Set a reminder for the future.
+    
+    Args:
+        message: The reminder message
+        minutes_from_now: How many minutes from now to set the reminder
+    
+    Returns:
+        Confirmation message
+    """
+    future_time = datetime.datetime.now() + datetime.timedelta(minutes=minutes_from_now)
+    time_str = future_time.strftime("%H:%M")
+    return f"Reminder set for {time_str} ({minutes_from_now} minutes from now): '{message}'"
+
+
+# Tool definitions for Ultravox
+CONVERSATION_TOOLS = [
+    {
+        "name": "get_current_time",
+        "description": "Get the current time in a specified timezone",
+        "parameters": {
+            "properties": {
+                "timezone": {
+                    "type": "string",
+                    "description": "The timezone (e.g., UTC, EST, PST)",
+                    "default": "UTC"
+                },
+                "format": {
+                    "type": "string",
+                    "description": "Time format - 24h or 12h",
+                    "enum": ["24h", "12h"],
+                    "default": "24h"
+                }
+            }
+        }
+    },
+    {
+        "name": "get_weather",
+        "description": "Get current weather information for a location",
+        "parameters": {
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": "City name or location"
+                },
+                "unit": {
+                    "type": "string",
+                    "description": "Temperature unit",
+                    "enum": ["celsius", "fahrenheit"],
+                    "default": "celsius"
+                }
+            },
+            "required": ["location"]
+        }
+    },
+    {
+        "name": "calculate",
+        "description": "Perform mathematical calculations",
+        "parameters": {
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "Mathematical expression to evaluate"
+                }
+            },
+            "required": ["expression"]
+        }
+    },
+    {
+        "name": "search_web",
+        "description": "Search the web for information",
+        "parameters": {
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query"
+                },
+                "num_results": {
+                    "type": "integer",
+                    "description": "Number of results to return",
+                    "default": 3
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "set_reminder",
+        "description": "Set a reminder for a future time",
+        "parameters": {
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The reminder message"
+                },
+                "minutes_from_now": {
+                    "type": "integer",
+                    "description": "Minutes from now to set the reminder"
+                }
+            },
+            "required": ["message", "minutes_from_now"]
+        }
+    }
+]
+
+# Tool executors mapping
+TOOL_EXECUTORS = {
+    "get_current_time": get_current_time,
+    "get_weather": get_weather,
+    "calculate": calculate,
+    "search_web": search_web,
+    "set_reminder": set_reminder
+}
 
 
 
@@ -250,11 +505,14 @@ def create_speech_to_speech_pipeline(remote_host: str = "127.0.0.1") -> Pipeline
         model_id="fixie-ai/ultravox-v0_5-llama-3_1-8b",
         system_prompt=(
             "You are a helpful assistant. Listen to what the user says and respond "
-            "appropriately and concisely. Keep responses under 2 sentences."
+            "appropriately and concisely. Keep responses under 2 sentences. "
+            "You have access to tools for getting time, weather, calculations, web search, and setting reminders."
         ),
         name="UltravoxNode",
         enable_conversation_history=True,
-        conversation_history_minutes=5.0  # Keep 5 minutes of conversation history
+        conversation_history_minutes=5.0,  # Keep 5 minutes of conversation history
+        tools=CONVERSATION_TOOLS,
+        tool_executors=TOOL_EXECUTORS
     )
 
     remote_ultravox = RemoteObjectExecutionNode(
@@ -302,6 +560,103 @@ def create_speech_to_speech_pipeline(remote_host: str = "127.0.0.1") -> Pipeline
     return pipeline
 
 
+async def register_webrtc_pipeline(registry: PipelineRegistry, remote_host: str = "127.0.0.1") -> str:
+    """
+    Register the WebRTC pipeline with the global registry for reuse and discovery.
+    
+    Args:
+        registry: Pipeline registry instance
+        remote_host: Host for remote execution
+        
+    Returns:
+        Pipeline ID for the registered pipeline
+    """
+    # Create a pipeline instance
+    pipeline = create_speech_to_speech_pipeline(remote_host)
+    
+    # Export the pipeline definition
+    definition = pipeline.export_definition()
+    
+    # Register with local registry first
+    pipeline_id = await registry.register_pipeline(
+        name="webrtc_speech_to_speech",
+        definition=definition,
+        metadata={
+            "description": "Complete WebRTC speech-to-speech pipeline with VAD, Ultravox, and Kokoro TTS",
+            "category": "audio",
+            "version": "1.0.0",
+            "author": "RemoteMedia WebRTC Example",
+            "tags": ["webrtc", "speech", "vad", "ultravox", "tts", "kokoro", "realtime"],
+            "features": [
+                "Voice Activity Detection with buffering",
+                "Ultravox speech-to-text with tool calling",
+                "Kokoro TTS synthesis",
+                "Remote execution support",
+                "Real-time WebRTC streaming"
+            ],
+            "tools": [
+                "get_current_time",
+                "get_weather", 
+                "calculate",
+                "search_web",
+                "set_reminder"
+            ],
+            "requirements": [
+                "aiortc",
+                "ultravox",
+                "kokoro-tts",
+                "torch",
+                "transformers"
+            ],
+            "remote_host": remote_host,
+            "is_template": True,
+            "use_case": "Real-time voice conversations with AI assistant capabilities"
+        },
+        owner_id="webrtc_server",
+        access_level=AccessLevel.PUBLIC,
+        persist=True
+    )
+    
+    logger.info(f"📋 Registered WebRTC pipeline: {pipeline_id}")
+    logger.info("   🎯 Pipeline features:")
+    logger.info("   • Voice Activity Detection (VAD)")
+    logger.info("   • Ultravox speech recognition with tools") 
+    logger.info("   • Kokoro TTS speech synthesis")
+    logger.info("   • Real-time WebRTC streaming")
+    logger.info("   • Remote execution support")
+    
+    # Also register with the remote execution service for JavaScript client discovery
+    try:
+        logger.info("🌐 Registering pipeline with remote execution service...")
+        remote_config = RemoteExecutorConfig(host=remote_host, port=50052, ssl_enabled=False)
+        remote_client = RemoteExecutionClient(config=remote_config)
+        await remote_client.connect()
+        
+        # Convert metadata to strings for gRPC
+        string_metadata = {}
+        for key, value in definition.get("metadata", {}).items():
+            if isinstance(value, list):
+                string_metadata[key] = ", ".join(str(v) for v in value)
+            else:
+                string_metadata[key] = str(value)
+        
+        # Register the pipeline with the remote service
+        remote_pipeline_id = await remote_client.register_pipeline(
+            pipeline_name="webrtc_speech_to_speech",
+            definition=definition,
+            metadata=string_metadata
+        )
+        
+        logger.info(f"✅ Pipeline registered with remote service: {remote_pipeline_id}")
+        logger.info("🔍 JavaScript clients can now discover this pipeline via PipelineClient.listPipelines()")
+        
+    except Exception as e:
+        logger.warning(f"⚠️  Could not register with remote service: {e}")
+        logger.info("💡 Local pipeline registration still available for this server")
+    
+    return pipeline_id
+
+
 async def main():
     """Run the WebRTC server with pipeline integration."""
     
@@ -310,11 +665,36 @@ async def main():
     REMOTE_HOST = os.environ.get("REMOTE_HOST", "127.0.0.1")
     SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
     SERVER_PORT = int(os.environ.get("SERVER_PORT", "8080"))
+    ENABLE_PERSISTENCE = os.environ.get("ENABLE_PERSISTENCE", "true").lower() == "true"
     
     logger.info("=== WebRTC Pipeline Server ===")
     logger.info(f"Server: {SERVER_HOST}:{SERVER_PORT}")
     logger.info(f"ML Pipeline: {'Enabled' if USE_ML_PIPELINE else 'Disabled'}")
     logger.info(f"Remote Host: {REMOTE_HOST}")
+    logger.info(f"Persistence: {'Enabled' if ENABLE_PERSISTENCE else 'Disabled'}")
+    
+    # Initialize pipeline registry with persistence
+    registry = PipelineRegistry(
+        db_path="webrtc_pipelines.db" if ENABLE_PERSISTENCE else None,
+        enable_persistence=ENABLE_PERSISTENCE
+    )
+    await registry.initialize()
+    
+    # Register the WebRTC pipeline for discovery and reuse
+    try:
+        pipeline_id = await register_webrtc_pipeline(registry, REMOTE_HOST)
+        logger.info(f"✅ WebRTC pipeline registered and available for clients")
+        
+        # Log registry statistics
+        pipeline_count = len(registry.pipelines)
+        logger.info(f"📊 Registry contains {pipeline_count} pipeline(s)")
+        
+        if ENABLE_PERSISTENCE:
+            logger.info("💾 Pipeline persisted to database for future sessions")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to register WebRTC pipeline: {e}")
+        # Continue without registry - server will still work
     
     # Create server configuration
     examples_dir = Path(__file__).parent
@@ -343,6 +723,29 @@ async def main():
         logger.info(f"  ❤️  Health check: http://{SERVER_HOST}:{SERVER_PORT}/health")
         logger.info(f"  📊 Connections: http://{SERVER_HOST}:{SERVER_PORT}/connections")
         
+        # Display pipeline registry information
+        logger.info("")
+        logger.info("🗂️  Pipeline Registry:")
+        logger.info(f"   • Registered pipelines: {len(registry.pipelines)}")
+        if ENABLE_PERSISTENCE:
+            logger.info(f"   • Database: webrtc_pipelines.db")
+            logger.info(f"   • Persistence: Enabled")
+        else:
+            logger.info(f"   • Persistence: Disabled (in-memory only)")
+        
+        for pid, registered in registry.pipelines.items():
+            logger.info(f"   • {registered.name} ({pid[:12]}...)")
+            logger.info(f"     Tags: {', '.join(registered.metadata.get('tags', []))}")
+        
+        if USE_ML_PIPELINE:
+            logger.info("")
+            logger.info("🛠️  Tool-enabled assistant is active with:")
+            logger.info("   • Time & date information")
+            logger.info("   • Weather information (mock)")
+            logger.info("   • Mathematical calculations")
+            logger.info("   • Web search (mock)")
+            logger.info("   • Reminder setting")
+        
         if not USE_ML_PIPELINE:
             logger.info("")
             logger.info("💡 To enable ML features (speech recognition, TTS):")
@@ -350,6 +753,11 @@ async def main():
             logger.info("   2. Set environment variable: USE_ML=true")
             logger.info("   3. Start remote service if using remote execution")
         
+        logger.info("")
+        logger.info("💡 Pipeline Access:")
+        logger.info("   • JavaScript clients can discover and execute this pipeline")
+        logger.info("   • Use PipelineClient.listPipelines() to see available pipelines")  
+        logger.info("   • Execute with PipelineClient.executePipeline('webrtc_speech_to_speech', data)")
         logger.info("")
         logger.info("Press Ctrl+C to stop the server")
         
@@ -359,11 +767,24 @@ async def main():
             
             # Log connection statistics
             connections_count = len(server.connections)
-            if connections_count > 0:
-                logger.info(f"Active connections: {connections_count}")
+            pipeline_count = len(registry.pipelines)
+            if connections_count > 0 or pipeline_count > 1:  # More than just our WebRTC pipeline
+                logger.info(f"Active connections: {connections_count}, Registered pipelines: {pipeline_count}")
                 
     except KeyboardInterrupt:
         logger.info("Shutting down server...")
+        
+        # Save any in-memory pipelines before shutdown
+        if ENABLE_PERSISTENCE and registry.pipelines:
+            logger.info("💾 Ensuring all pipelines are persisted...")
+            for pid, registered in registry.pipelines.items():
+                try:
+                    saved = await registry.save_pipeline(pid, "webrtc_server", AccessLevel.PUBLIC)
+                    if saved:
+                        logger.info(f"   ✅ Saved: {registered.name}")
+                except Exception as e:
+                    logger.warning(f"   ⚠️  Could not save {registered.name}: {e}")
+                    
     except Exception as e:
         logger.error(f"Server error: {e}", exc_info=True)
     finally:
