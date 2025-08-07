@@ -15,20 +15,20 @@ from aiortc import VideoStreamTrack
 from av import VideoFrame
 
 try:
-    from .camera_manager import CameraInfo, HAS_PICAMERA2
+    from .camera_manager import CameraInfo, HAS_PICAMERA2, get_picamera2_instance
 except ImportError:
     # Fallback for direct execution
-    from camera_manager import CameraInfo, HAS_PICAMERA2
+    from camera_manager import CameraInfo, HAS_PICAMERA2, get_picamera2_instance
 
 logger = logging.getLogger(__name__)
 
 if HAS_PICAMERA2:
     from picamera2 import Picamera2
 
-# Global camera instance management for picamera2
-_picamera_instances = {}
-_picamera_lock = {}
-_picamera_in_use = {}
+# Global camera state management for picamera2
+_picamera2_configured = False
+_picamera2_in_use = False
+_picamera2_config_lock = False
 
 
 class CameraVideoTrack(VideoStreamTrack):
@@ -90,25 +90,27 @@ class CameraVideoTrack(VideoStreamTrack):
                 logger.info(f"📹 OpenCV camera {self.camera_info.index}: {actual_width}x{actual_height} @ {actual_fps}fps")
                 
             elif self.camera_info.type == 'picamera2' and HAS_PICAMERA2:
-                # Use singleton pattern for picamera2 to prevent resource conflicts
-                camera_key = f"pi_camera_{self.camera_info.index}"
+                global _picamera2_configured, _picamera2_in_use, _picamera2_config_lock
                 
-                if camera_key not in _picamera_instances:
-                    logger.debug(f"🔍 Creating new Picamera2 instance for {camera_key}")
-                    _picamera_instances[camera_key] = Picamera2()
-                    _picamera_lock[camera_key] = False
-                else:
-                    logger.debug(f"🔍 Reusing existing Picamera2 instance for {camera_key}")
+                # Get the singleton Picamera2 instance
+                self.camera = get_picamera2_instance()
+                if self.camera is None:
+                    raise RuntimeError("Failed to get Picamera2 singleton instance")
                 
-                self.camera = _picamera_instances[camera_key]
+                logger.debug(f"🔍 Using singleton Picamera2 instance for camera {self.camera_info.index}")
                 
                 # Check if camera is already configured and running
-                if _picamera_lock[camera_key]:
-                    logger.debug(f"📷 Camera {camera_key} already configured and running")
+                if _picamera2_configured and _picamera2_in_use:
+                    logger.debug(f"📷 Picamera2 already configured and in use")
+                    return
+                
+                # Prevent concurrent configuration
+                if _picamera2_config_lock:
+                    logger.debug(f"📷 Picamera2 configuration in progress, waiting...")
                     return
                 
                 # Mark as being configured
-                _picamera_lock[camera_key] = True
+                _picamera2_config_lock = True
                 
                 # Create configuration with error handling for sensor modes
                 try:
@@ -134,6 +136,10 @@ class CameraVideoTrack(VideoStreamTrack):
                     if test_frame is None:
                         raise RuntimeError("Test capture failed")
                     
+                    # Mark as configured and in use
+                    _picamera2_configured = True
+                    _picamera2_in_use = True
+                    
                     logger.info(f"📷 Raspberry Pi camera: {self.width}x{self.height} @ {self.fps}fps")
                     
                 except Exception as config_error:
@@ -150,10 +156,20 @@ class CameraVideoTrack(VideoStreamTrack):
                         actual_size = main_stream.get('size', (640, 480))
                         self.width, self.height = actual_size
                         
+                        # Mark as configured and in use
+                        _picamera2_configured = True
+                        _picamera2_in_use = True
+                        
                         logger.info(f"📷 Raspberry Pi camera (fallback config): {self.width}x{self.height}")
                     except Exception as fallback_error:
                         logger.error(f"Fallback configuration also failed: {fallback_error}")
                         raise RuntimeError(f"Could not configure picamera2: {config_error}")
+                    finally:
+                        _picamera2_config_lock = False
+                
+                except Exception as e:
+                    _picamera2_config_lock = False
+                    raise e
                 
             logger.info(f"✅ Initialized {self.camera_info.name}")
             
@@ -170,12 +186,18 @@ class CameraVideoTrack(VideoStreamTrack):
         if self.camera is None:
             return self._create_error_frame("Camera not initialized")
         
-        # Prevent concurrent access
-        if self.camera_lock:
+        # Prevent concurrent access (only for OpenCV cameras)
+        if self.camera_info.type == 'opencv' and self.camera_lock:
             return self._create_error_frame("Camera busy")
         
+        # For picamera2, check if it's available
+        if self.camera_info.type == 'picamera2' and not _picamera2_configured:
+            return self._create_error_frame("Camera not configured")
+        
         try:
-            self.camera_lock = True
+            # Only set lock for OpenCV cameras
+            if self.camera_info.type == 'opencv':
+                self.camera_lock = True
             frame = self._capture_frame()
             self.frame_count += 1
             
@@ -196,7 +218,9 @@ class CameraVideoTrack(VideoStreamTrack):
             logger.error(f"Error capturing frame from camera {self.camera_id}: {e}")
             frame = self._create_error_frame(f"Capture error: {str(e)[:50]}")
         finally:
-            self.camera_lock = False
+            # Only release lock for OpenCV cameras
+            if self.camera_info.type == 'opencv':
+                self.camera_lock = False
         
         # Add camera ID and timestamp overlay
         frame = self._add_overlay(frame)
@@ -334,15 +358,19 @@ class CameraVideoTrack(VideoStreamTrack):
                 if self.camera_info.type == 'opencv':
                     self.camera.release()
                 elif self.camera_info.type == 'picamera2' and HAS_PICAMERA2:
-                    camera_key = f"pi_camera_{self.camera_info.index}"
+                    global _picamera2_configured, _picamera2_in_use
                     
-                    # Only stop if we're the ones who started it
-                    if camera_key in _picamera_lock and _picamera_lock[camera_key]:
-                        logger.debug(f"🛑 Stopping picamera2 instance {camera_key}")
-                        self.camera.stop()
-                        _picamera_lock[camera_key] = False
+                    # Only stop if we're the ones using it
+                    if _picamera2_configured and _picamera2_in_use:
+                        logger.debug(f"🛑 Stopping picamera2 singleton instance")
+                        try:
+                            self.camera.stop()
+                        except Exception as stop_error:
+                            logger.debug(f"Error stopping picamera2: {stop_error}")
+                        _picamera2_configured = False
+                        _picamera2_in_use = False
                     else:
-                        logger.debug(f"🛑 Not stopping picamera2 instance {camera_key} - not our responsibility")
+                        logger.debug(f"🛑 Not stopping picamera2 - not currently in use")
                 
                 logger.info(f"🛑 Stopped camera {self.camera_id} ({self.camera_info.name})")
                 

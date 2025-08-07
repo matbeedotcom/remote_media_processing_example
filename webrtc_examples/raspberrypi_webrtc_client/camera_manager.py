@@ -21,6 +21,65 @@ except ImportError:
     HAS_PICAMERA2 = False
     logger.info("ℹ️  Picamera2 not available - Using OpenCV cameras only")
 
+# Global Picamera2 singleton management
+_picamera2_instance = None
+_picamera2_initialized = False
+_picamera2_sensor_modes = None
+_picamera2_camera_name = None
+
+def get_picamera2_instance():
+    """Get the singleton Picamera2 instance."""
+    global _picamera2_instance, _picamera2_initialized, _picamera2_sensor_modes, _picamera2_camera_name
+    
+    if not HAS_PICAMERA2:
+        return None
+        
+    if _picamera2_instance is None and not _picamera2_initialized:
+        try:
+            logger.debug("🔍 Creating singleton Picamera2 instance...")
+            _picamera2_instance = Picamera2()
+            
+            # Cache sensor modes and camera identification on first access
+            _picamera2_sensor_modes = _picamera2_instance.sensor_modes
+            _picamera2_camera_name = "Raspberry Pi Camera"
+            
+            if _picamera2_sensor_modes:
+                # Try to identify specific camera types
+                if any(mode.get('size') == (2560, 400) for mode in _picamera2_sensor_modes):
+                    _picamera2_camera_name = "Arducam PiVariety Camera"
+                    logger.info("🎭 Detected Arducam PiVariety camera")
+                elif any(mode.get('size', (0,0))[0] >= 5000 for mode in _picamera2_sensor_modes):
+                    _picamera2_camera_name = "High Resolution Pi Camera"
+            
+            _picamera2_initialized = True
+            logger.debug(f"✅ Singleton Picamera2 instance created: {_picamera2_camera_name}")
+            
+        except Exception as e:
+            logger.debug(f"❌ Failed to create Picamera2 instance: {e}")
+            _picamera2_initialized = True  # Mark as attempted
+            return None
+    
+    return _picamera2_instance
+
+def get_picamera2_info():
+    """Get cached Picamera2 sensor information without creating new instance."""
+    get_picamera2_instance()  # Ensure instance is created
+    return _picamera2_sensor_modes, _picamera2_camera_name
+
+def close_picamera2_instance():
+    """Close the singleton Picamera2 instance."""
+    global _picamera2_instance, _picamera2_initialized
+    
+    if _picamera2_instance is not None:
+        try:
+            _picamera2_instance.close()
+            logger.debug("🛑 Closed singleton Picamera2 instance")
+        except Exception as e:
+            logger.debug(f"Error closing Picamera2: {e}")
+        finally:
+            _picamera2_instance = None
+            _picamera2_initialized = False
+
 
 @dataclass
 class CameraInfo:
@@ -127,18 +186,20 @@ class CameraManager:
         return cameras
     
     def _discover_pi_camera(self) -> Optional[CameraInfo]:
-        """Discover Raspberry Pi camera."""
+        """Discover Raspberry Pi camera using singleton instance."""
         if not HAS_PICAMERA2:
             logger.debug("❌ _discover_pi_camera: HAS_PICAMERA2 is False")
             return None
         
         logger.debug("🔍 _discover_pi_camera: Starting picamera2 detection...")
         try:
-            picam = Picamera2()
+            # Get cached sensor info without creating new instance
+            sensor_modes, camera_name = get_picamera2_info()
             
-            # Get sensor modes to identify camera type and capabilities
-            sensor_modes = picam.sensor_modes
-            camera_name = "Raspberry Pi Camera"
+            if sensor_modes is None or camera_name is None:
+                logger.debug("❌ _discover_pi_camera: Failed to get Picamera2 info")
+                return None
+            
             default_width, default_height = 640, 480
             
             if sensor_modes:
@@ -147,18 +208,14 @@ class CameraManager:
                 for i, mode in enumerate(sensor_modes):
                     logger.debug(f"  Mode {i}: {mode}")
                 
-                # Try to identify specific camera types
+                # Determine default resolution based on available modes
                 first_mode = sensor_modes[0]
                 mode_size = first_mode.get('size', (640, 480))
                 
-                # Check for Arducam PiVariety camera patterns
-                if any(mode.get('size') == (2560, 400) for mode in sensor_modes):
-                    camera_name = "Arducam PiVariety Camera"
+                if "PiVariety" in camera_name:
                     # Use a reasonable default resolution for streaming
                     default_width, default_height = 640, 480
-                    logger.info("🎭 Detected Arducam PiVariety camera")
-                elif any(mode.get('size', (0,0))[0] >= 5000 for mode in sensor_modes):
-                    camera_name = "High Resolution Pi Camera"
+                elif "High Resolution" in camera_name:
                     default_width, default_height = 1280, 720
                 else:
                     # Use the first available mode as default
@@ -171,53 +228,19 @@ class CameraManager:
                     elif default_width < 640:
                         default_width, default_height = 640, 480
             
-            # Test camera configuration with a suitable resolution
-            try:
-                test_config = picam.create_video_configuration(
-                    main={"size": (default_width, default_height), "format": "RGB888"}
-                )
-                picam.configure(test_config)
-                
-                # Test that we can start and get the actual configuration
-                picam.start()
-                actual_config = picam.camera_configuration()
-                picam.stop()
-                
-                # Get actual resolution from the configuration
-                main_stream = actual_config.get('main', {})
-                actual_size = main_stream.get('size', (default_width, default_height))
-                actual_width, actual_height = actual_size
-                
-                camera_info = CameraInfo(
-                    index=0,  # Will be set later
-                    name=camera_name,
-                    type='picamera2',
-                    width=actual_width,
-                    height=actual_height,
-                    fps=30.0,
-                    device_path="/dev/video0"
-                )
-                
-                logger.info(f"📷 Found {camera_name}: {actual_width}x{actual_height}")
-                picam.close()
-                return camera_info
-                
-            except Exception as config_error:
-                logger.debug(f"Error testing camera configuration: {config_error}")
-                # Fall back to basic info without testing
-                camera_info = CameraInfo(
-                    index=0,
-                    name=camera_name,
-                    type='picamera2',
-                    width=default_width,
-                    height=default_height,
-                    fps=30.0,
-                    device_path="/dev/video0"
-                )
-                
-                logger.info(f"📷 Found {camera_name}: {default_width}x{default_height} (untested)")
-                picam.close()
-                return camera_info
+            # Create camera info without testing configuration (avoids conflicts)
+            camera_info = CameraInfo(
+                index=0,  # Will be set later
+                name=camera_name,
+                type='picamera2',
+                width=default_width,
+                height=default_height,
+                fps=30.0,
+                device_path="/dev/video0"
+            )
+            
+            logger.info(f"📷 Found {camera_name}: {default_width}x{default_height} (using singleton)")
+            return camera_info
             
         except Exception as e:
             logger.debug(f"❌ _discover_pi_camera: Raspberry Pi camera detection failed: {e}")
@@ -254,10 +277,9 @@ class CameraManager:
                 return ret and frame is not None
             
             elif camera_info.type == 'picamera2' and HAS_PICAMERA2:
-                # Try to create Picamera2 instance
-                picam = Picamera2()
-                picam.close()
-                return True
+                # Check if singleton instance is available (don't create new one)
+                picam = get_picamera2_instance()
+                return picam is not None
             
             return False
             
@@ -295,15 +317,14 @@ class CameraManager:
             cap.release()
         
         elif camera_info.type == 'picamera2' and HAS_PICAMERA2:
-            # Get Raspberry Pi camera capabilities
+            # Get Raspberry Pi camera capabilities from cached info
             try:
-                picam = Picamera2()
-                sensor_modes = picam.sensor_modes
-                capabilities.update({
-                    'sensor_modes': len(sensor_modes),
-                    'max_resolution': max([(mode['size']) for mode in sensor_modes], key=lambda x: x[0]*x[1]) if sensor_modes else None
-                })
-                picam.close()
+                sensor_modes, camera_name = get_picamera2_info()
+                if sensor_modes:
+                    capabilities.update({
+                        'sensor_modes': len(sensor_modes),
+                        'max_resolution': max([(mode['size']) for mode in sensor_modes], key=lambda x: x[0]*x[1]) if sensor_modes else None
+                    })
             except Exception as e:
                 logger.debug(f"Could not get Pi camera capabilities: {e}")
         

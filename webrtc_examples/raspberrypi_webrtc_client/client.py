@@ -14,7 +14,7 @@ from typing import List, Optional, Dict, Any
 import websockets
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 
-from camera_manager import CameraManager
+from camera_manager import CameraManager, close_picamera2_instance
 from video_track import CameraVideoTrack
 
 logger = logging.getLogger(__name__)
@@ -108,27 +108,40 @@ class RaspberryPiWebRTCClient:
     
     def select_cameras(self, camera_spec: str) -> bool:
         """Select cameras to stream from specification."""
-        self.selected_cameras.clear()
+        # Only clear if we're not already connected (prevent reconnection issues)
+        if not self.connected:
+            self.selected_cameras.clear()
+        else:
+            logger.debug(f"⚠️  Not clearing selected cameras - already connected")
         
+        new_cameras = []
         if camera_spec.lower() == "all":
             # Select all available cameras
-            self.selected_cameras = list(self.camera_manager.cameras.keys())
+            new_cameras = list(self.camera_manager.cameras.keys())
         else:
             # Parse comma-separated camera indices
             try:
                 indices = [int(x.strip()) for x in camera_spec.split(",")]
                 for idx in indices:
                     if idx in self.camera_manager.cameras:
-                        self.selected_cameras.append(idx)
+                        new_cameras.append(idx)
                     else:
                         logger.warning(f"Camera {idx} not found")
             except ValueError:
                 logger.error(f"Invalid camera specification: {camera_spec}")
                 return False
         
+        # Only add cameras that aren't already selected
+        for cam_idx in new_cameras:
+            if cam_idx not in self.selected_cameras:
+                self.selected_cameras.append(cam_idx)
+        
         if not self.selected_cameras:
             logger.error("No valid cameras selected")
             return False
+        
+        # Remove duplicates while preserving order
+        self.selected_cameras = list(dict.fromkeys(self.selected_cameras))
         
         # Validate selected cameras
         valid_cameras = []
@@ -145,6 +158,11 @@ class RaspberryPiWebRTCClient:
             return False
         
         logger.info(f"🎯 Selected cameras: {self.selected_cameras}")
+        
+        # Log if we have more than one camera selected
+        if len(self.selected_cameras) > 1:
+            logger.warning(f"⚠️  Multiple cameras selected: {self.selected_cameras}. This may cause resource conflicts.")
+        
         return True
     
     async def _cleanup_connection(self):
@@ -468,6 +486,12 @@ class RaspberryPiWebRTCClient:
         
         # Cleanup connection
         await self._cleanup_connection()
+        
+        # Close Picamera2 singleton if it was used
+        try:
+            close_picamera2_instance()
+        except Exception as e:
+            logger.debug(f"Error closing Picamera2 singleton: {e}")
         
         # Final statistics
         final_stats = await self._get_detailed_stats()
