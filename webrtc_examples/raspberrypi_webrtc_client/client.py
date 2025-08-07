@@ -14,8 +14,13 @@ from typing import List, Optional, Dict, Any
 import websockets
 from aiortc import RTCPeerConnection, RTCSessionDescription
 
-from .camera_manager import CameraManager
-from .video_track import CameraVideoTrack
+try:
+    from .camera_manager import CameraManager
+    from .video_track import CameraVideoTrack
+except ImportError:
+    # Fallback for direct execution
+    from camera_manager import CameraManager
+    from video_track import CameraVideoTrack
 
 logger = logging.getLogger(__name__)
 

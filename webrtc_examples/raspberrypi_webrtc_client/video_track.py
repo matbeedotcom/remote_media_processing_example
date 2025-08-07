@@ -11,9 +11,14 @@ import time
 import logging
 import fractions
 from typing import Optional
-from aiortc import VideoStreamTrack, VideoFrame
+from aiortc import VideoStreamTrack
+from av import VideoFrame
 
-from .camera_manager import CameraInfo, HAS_PICAMERA2
+try:
+    from .camera_manager import CameraInfo, HAS_PICAMERA2
+except ImportError:
+    # Fallback for direct execution
+    from camera_manager import CameraInfo, HAS_PICAMERA2
 
 logger = logging.getLogger(__name__)
 
