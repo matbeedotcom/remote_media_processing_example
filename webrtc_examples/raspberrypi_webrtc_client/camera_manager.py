@@ -99,6 +99,7 @@ class CameraManager:
     
     def __init__(self):
         self.cameras: Dict[int, CameraInfo] = {}
+        self._max_picamera_resolution = None  # Store max resolution for picamera
         self.discover_cameras()
     
     def discover_cameras(self):
@@ -201,32 +202,39 @@ class CameraManager:
                 return None
             
             default_width, default_height = 640, 480
+            max_width, max_height = 640, 480
             
             if sensor_modes:
                 # Log available sensor modes for debugging
-                logger.debug(f"Available sensor modes: {len(sensor_modes)}")
+                logger.info(f"📷 Available sensor modes for {camera_name}: {len(sensor_modes)}")
+                
+                # Find the maximum resolution available
                 for i, mode in enumerate(sensor_modes):
-                    logger.debug(f"  Mode {i}: {mode}")
+                    mode_size = mode.get('size', (0, 0))
+                    width, height = mode_size[0], mode_size[1]
+                    logger.info(f"  Mode {i}: {width}x{height}")
+                    
+                    # Track maximum resolution
+                    if width * height > max_width * max_height:
+                        max_width, max_height = width, height
                 
-                # Determine default resolution based on available modes
-                first_mode = sensor_modes[0]
-                mode_size = first_mode.get('size', (640, 480))
+                logger.info(f"📷 Maximum available resolution: {max_width}x{max_height}")
                 
+                # Set default to maximum resolution found
+                default_width, default_height = max_width, max_height
+                
+                # For known camera types, we might want to limit resolution for performance
                 if "PiVariety" in camera_name:
-                    # Use a reasonable default resolution for streaming
-                    default_width, default_height = 640, 480
+                    # PiVariety cameras might have very high res, limit for streaming
+                    if default_width > 2560:
+                        default_width, default_height = 2560, 1440
                 elif "High Resolution" in camera_name:
-                    default_width, default_height = 1280, 720
-                else:
-                    # Use the first available mode as default
-                    default_width, default_height = mode_size[0], mode_size[1]
-                    # But limit to reasonable streaming resolution
-                    if default_width > 1920:
-                        default_width, default_height = 1280, 720
-                    elif default_width > 1280:
-                        default_width, default_height = 1280, 720
-                    elif default_width < 640:
-                        default_width, default_height = 640, 480
+                    # High res camera, use full resolution if reasonable
+                    if default_width > 4056:  # Pi Camera HQ max is 4056x3040
+                        default_width, default_height = 4056, 3040
+                
+                # Store the maximum resolution info
+                self._max_picamera_resolution = (max_width, max_height)
             
             # Create camera info without testing configuration (avoids conflicts)
             camera_info = CameraInfo(
@@ -239,7 +247,7 @@ class CameraManager:
                 device_path="/dev/video0"
             )
             
-            logger.info(f"📷 Found {camera_name}: {default_width}x{default_height} (using singleton)")
+            logger.info(f"📷 Found {camera_name}: Default {default_width}x{default_height}, Max: {max_width}x{max_height}")
             return camera_info
             
         except Exception as e:
@@ -254,6 +262,10 @@ class CameraManager:
     def get_camera(self, index: int) -> Optional[CameraInfo]:
         """Get camera info by index."""
         return self.cameras.get(index)
+    
+    def get_max_picamera_resolution(self) -> Optional[tuple]:
+        """Get the maximum resolution available for the Picamera2."""
+        return self._max_picamera_resolution
     
     def refresh_cameras(self):
         """Refresh camera discovery."""
@@ -321,9 +333,12 @@ class CameraManager:
             try:
                 sensor_modes, camera_name = get_picamera2_info()
                 if sensor_modes:
+                    max_res = max([(mode['size']) for mode in sensor_modes], key=lambda x: x[0]*x[1]) if sensor_modes else None
+                    available_resolutions = [(mode['size']) for mode in sensor_modes] if sensor_modes else []
                     capabilities.update({
                         'sensor_modes': len(sensor_modes),
-                        'max_resolution': max([(mode['size']) for mode in sensor_modes], key=lambda x: x[0]*x[1]) if sensor_modes else None
+                        'max_resolution': max_res,
+                        'available_resolutions': available_resolutions
                     })
             except Exception as e:
                 logger.debug(f"Could not get Pi camera capabilities: {e}")

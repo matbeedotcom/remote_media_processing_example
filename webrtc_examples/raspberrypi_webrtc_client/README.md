@@ -6,9 +6,11 @@ A Python-based WebRTC client for Raspberry Pi that streams camera feeds to the C
 
 - **Multi-camera support** - Stream from USB cameras, Raspberry Pi cameras, or both
 - **Automatic camera detection** - Discovers and lists available cameras
+- **Auto-resolution detection** - Automatically uses maximum available resolution for Picamera2
 - **Real-time streaming** - Low-latency WebRTC video streaming
 - **Automatic reconnection** - Handles network interruptions gracefully
 - **Performance monitoring** - Built-in FPS and error tracking
+- **Debug preview** - Save and analyze frames being sent
 - **Flexible configuration** - Command-line and programmatic configuration
 
 ## Hardware Requirements
@@ -93,12 +95,31 @@ python3 main.py --test-cameras --camera all
 python3 main.py --test-cameras --camera 0
 ```
 
+### Resolution Configuration
+
+```bash
+# Use maximum available resolution (default for Picamera2)
+python3 main.py --camera 0
+
+# Use maximum resolution explicitly
+python3 main.py --max-resolution
+
+# Use resolution presets
+python3 main.py --resolution 1080p  # 1920x1080
+python3 main.py --resolution 720p   # 1280x720
+python3 main.py --resolution 4k     # 3840x2160
+python3 main.py --resolution max    # Maximum available
+
+# Custom resolution
+python3 main.py --width 1280 --height 720
+
+# Custom frame rate
+python3 main.py --fps 30
+```
+
 ### Advanced Configuration
 
 ```bash
-# Custom resolution and frame rate
-python3 main.py --width 1280 --height 720 --fps 30
-
 # Disable auto-reconnection
 python3 main.py --no-reconnect
 
@@ -107,6 +128,12 @@ python3 main.py --max-reconnects 5 --reconnect-delay 10
 
 # Verbose logging
 python3 main.py --verbose
+
+# Debug preview mode
+python3 main.py --debug-preview
+
+# Save preview frames
+python3 main.py --save-preview-frames --preview-dir /tmp/frames
 ```
 
 ## Command Line Options
@@ -115,8 +142,10 @@ python3 main.py --verbose
 |--------|-------------|---------|
 | `--server` | WebRTC server WebSocket URL | `ws://localhost:8081/ws` |
 | `--camera` | Camera specification (index, 'all', or comma-separated) | `0` |
-| `--width` | Video width in pixels | `640` |
-| `--height` | Video height in pixels | `480` |
+| `--width` | Video width in pixels | Auto-detect maximum |
+| `--height` | Video height in pixels | Auto-detect maximum |
+| `--max-resolution` | Use maximum available resolution | Auto for Picamera2 |
+| `--resolution` | Preset resolution (max, 4k, 1080p, 720p, 480p, vga) | - |
 | `--fps` | Video frame rate | `30` |
 | `--list-cameras` | List available cameras and exit | - |
 | `--test-cameras` | Test selected cameras and exit | - |
@@ -124,6 +153,10 @@ python3 main.py --verbose
 | `--max-reconnects` | Maximum reconnection attempts | `10` |
 | `--reconnect-delay` | Delay between reconnection attempts (seconds) | `5.0` |
 | `--verbose` | Enable verbose logging | - |
+| `--debug-preview` | Enable frame analysis and debugging | - |
+| `--save-preview-frames` | Save preview frames to disk | - |
+| `--preview-dir` | Directory for preview frames | `/tmp/webrtc_preview` |
+| `--preview-interval` | Save every N frames | `30` |
 
 ## Camera Types
 
@@ -136,6 +169,18 @@ python3 main.py --verbose
 - Requires picamera2 library
 - Better integration with Pi hardware
 - Lower CPU usage compared to USB cameras
+- **Automatic maximum resolution detection**
+- Supports high resolution cameras (HQ Camera, Camera Module 3)
+
+#### Supported Raspberry Pi Cameras
+
+| Camera Model | Max Resolution | Default in Client |
+|--------------|---------------|-------------------|
+| Camera Module v1 | 2592×1944 | Uses maximum |
+| Camera Module v2 | 3280×2464 | Uses maximum |
+| Camera Module 3 | 4608×2592 | Uses maximum |
+| HQ Camera | 4056×3040 | Uses maximum |
+| Arducam variants | Varies | Auto-detected |
 
 ## Troubleshooting
 

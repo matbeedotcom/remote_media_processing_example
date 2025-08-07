@@ -10,6 +10,8 @@ import numpy as np
 import time
 import logging
 import fractions
+import os
+from pathlib import Path
 from typing import Optional
 from aiortc import VideoStreamTrack
 from av import VideoFrame
@@ -40,7 +42,10 @@ class CameraVideoTrack(VideoStreamTrack):
         width: int = 640, 
         height: int = 480, 
         fps: int = 30,
-        camera_id: Optional[int] = None
+        camera_id: Optional[int] = None,
+        debug_preview: bool = False,
+        save_preview_frames: bool = False,
+        preview_dir: Optional[str] = None
     ):
         super().__init__()
         self.camera_info = camera_info
@@ -64,8 +69,39 @@ class CameraVideoTrack(VideoStreamTrack):
         self.max_errors = 10
         self.last_error_time = 0
         
+        # Debug and preview settings
+        self.debug_preview = debug_preview or os.environ.get('DEBUG_PREVIEW', '').lower() == 'true'
+        self.save_preview_frames = save_preview_frames or os.environ.get('SAVE_PREVIEW_FRAMES', '').lower() == 'true'
+        self.preview_dir = preview_dir or os.environ.get('PREVIEW_DIR', '/tmp/webrtc_preview')
+        self.preview_interval = int(os.environ.get('PREVIEW_INTERVAL', '30'))  # Save every N frames
+        self.last_preview_save = 0
+        
+        # Frame statistics
+        self.frame_stats = {
+            'min_brightness': 255,
+            'max_brightness': 0,
+            'avg_brightness': 0,
+            'total_brightness': 0,
+            'blank_frames': 0,
+            'dark_frames': 0,
+            'bright_frames': 0
+        }
+        
+        # Setup preview directory if needed
+        if self.save_preview_frames:
+            self._setup_preview_dir()
+        
         # Initialize camera
         self._init_camera()
+        
+        # Log debug settings
+        if self.debug_preview or self.save_preview_frames:
+            logger.info(f"🔍 Debug mode enabled for camera {self.camera_id}:")
+            if self.debug_preview:
+                logger.info(f"   • Frame analysis enabled")
+            if self.save_preview_frames:
+                logger.info(f"   • Saving preview frames to: {self.preview_dir}")
+                logger.info(f"   • Preview interval: every {self.preview_interval} frames")
     
     def _init_camera(self):
         """Initialize the camera based on type."""
@@ -114,6 +150,29 @@ class CameraVideoTrack(VideoStreamTrack):
                 
                 # Create configuration with error handling for sensor modes
                 try:
+                    # Log the requested resolution
+                    logger.info(f"🎯 Requesting Picamera2 resolution: {self.width}x{self.height}")
+                    
+                    # Get sensor modes to find best match
+                    sensor_modes = self.camera.sensor_modes
+                    if sensor_modes:
+                        logger.debug(f"📷 Available sensor modes: {len(sensor_modes)}")
+                        
+                        # Find best matching mode for requested resolution
+                        best_mode = None
+                        for mode in sensor_modes:
+                            mode_size = mode.get('size', (0, 0))
+                            if mode_size[0] >= self.width and mode_size[1] >= self.height:
+                                if best_mode is None or (mode_size[0] * mode_size[1] < best_mode['size'][0] * best_mode['size'][1]):
+                                    best_mode = mode
+                        
+                        # If no mode is large enough, use the largest available
+                        if best_mode is None:
+                            best_mode = max(sensor_modes, key=lambda m: m['size'][0] * m['size'][1])
+                            logger.warning(f"⚠️  No sensor mode >= {self.width}x{self.height}, using largest: {best_mode['size']}")
+                        else:
+                            logger.info(f"✅ Selected sensor mode: {best_mode['size']} for requested {self.width}x{self.height}")
+                    
                     config = self.camera.create_video_configuration(
                         main={"size": (self.width, self.height), "format": "RGB888"}
                     )
@@ -128,6 +187,8 @@ class CameraVideoTrack(VideoStreamTrack):
                     if actual_size != (self.width, self.height):
                         logger.info(f"📷 Camera adjusted resolution from {self.width}x{self.height} to {actual_size[0]}x{actual_size[1]}")
                         self.width, self.height = actual_size
+                    else:
+                        logger.info(f"✅ Camera configured at requested resolution: {self.width}x{self.height}")
                     
                     self.camera.start()
                     
@@ -140,7 +201,10 @@ class CameraVideoTrack(VideoStreamTrack):
                     _picamera2_configured = True
                     _picamera2_in_use = True
                     
-                    logger.info(f"📷 Raspberry Pi camera: {self.width}x{self.height} @ {self.fps}fps")
+                    logger.info(f"📷 Raspberry Pi camera streaming at: {self.width}x{self.height} @ {self.fps}fps")
+                    
+                    # Log the actual frame size from test capture
+                    logger.info(f"🎬 Test frame shape: {test_frame.shape} (H×W×C)")
                     
                 except Exception as config_error:
                     logger.error(f"Failed to configure picamera2: {config_error}")
@@ -208,12 +272,29 @@ class CameraVideoTrack(VideoStreamTrack):
             # Reset error count on successful frame
             self.error_count = 0
             
+            # Analyze frame if debug preview is enabled
+            if self.debug_preview:
+                self._analyze_frame(frame)
+            
+            # Save preview frame if enabled
+            if self.save_preview_frames and (self.frame_count % self.preview_interval == 0):
+                self._save_preview_frame(frame)
+            
             # Report performance periodically
             current_time = time.time()
             if current_time - self.last_fps_report >= self.fps_report_interval:
                 elapsed = current_time - self.start_time
                 actual_fps = self.frame_count / elapsed if elapsed > 0 else 0
                 logger.info(f"📊 Camera {self.camera_id}: {actual_fps:.1f} FPS ({self.frame_count} frames)")
+                
+                # Include frame analysis if debug preview is enabled
+                if self.debug_preview and self.frame_count > 0:
+                    avg_brightness = self.frame_stats['total_brightness'] / self.frame_count
+                    logger.info(f"   🎨 Frame stats: Avg brightness: {avg_brightness:.1f}, "
+                               f"Blank: {self.frame_stats['blank_frames']}, "
+                               f"Dark: {self.frame_stats['dark_frames']}, "
+                               f"Bright: {self.frame_stats['bright_frames']}")
+                
                 self.last_fps_report = current_time
                     
         except Exception as e:
@@ -235,8 +316,9 @@ class CameraVideoTrack(VideoStreamTrack):
             video_frame.pts = self.frame_count
             video_frame.time_base = fractions.Fraction(1, self.fps)
             
-            # Log frame sending periodically
-            if self.frame_count % 30 == 0 or self.frame_count <= 5:
+            # Log frame sending periodically (less frequently for high resolution)
+            log_interval = 60 if self.width > 1920 else 30
+            if self.frame_count % log_interval == 0 or self.frame_count <= 5:
                 logger.info(f"📤 Sending video frame #{self.frame_count} to WebRTC: {frame.shape} {frame.dtype} → PTS={video_frame.pts}")
             
             return video_frame
@@ -402,5 +484,114 @@ class CameraVideoTrack(VideoStreamTrack):
             'fps': fps,
             'error_count': self.error_count,
             'uptime': elapsed,
-            'resolution': (self.width, self.height)
+            'resolution': (self.width, self.height),
+            'debug_preview': self.debug_preview,
+            'save_preview_frames': self.save_preview_frames,
+            'frame_stats': self.frame_stats if self.debug_preview else None
         }
+    
+    def _setup_preview_dir(self):
+        """Setup directory for preview frames."""
+        try:
+            preview_path = Path(self.preview_dir) / f"camera_{self.camera_id}"
+            preview_path.mkdir(parents=True, exist_ok=True)
+            self.preview_dir = str(preview_path)
+            logger.info(f"📁 Preview directory created: {self.preview_dir}")
+        except Exception as e:
+            logger.error(f"Failed to create preview directory: {e}")
+            self.save_preview_frames = False
+    
+    def _analyze_frame(self, frame: np.ndarray):
+        """Analyze frame for debugging purposes."""
+        try:
+            # Calculate brightness
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            brightness = np.mean(gray)
+            
+            # Update statistics
+            self.frame_stats['total_brightness'] += brightness
+            self.frame_stats['min_brightness'] = min(self.frame_stats['min_brightness'], brightness)
+            self.frame_stats['max_brightness'] = max(self.frame_stats['max_brightness'], brightness)
+            
+            # Classify frame
+            if brightness < 10:
+                self.frame_stats['blank_frames'] += 1
+                if self.frame_count % 100 == 0:  # Log occasionally
+                    logger.warning(f"⚫ Camera {self.camera_id}: Detected blank/black frame (brightness: {brightness:.1f})")
+            elif brightness < 50:
+                self.frame_stats['dark_frames'] += 1
+            elif brightness > 200:
+                self.frame_stats['bright_frames'] += 1
+            
+            # Check for common issues
+            if self.frame_count == 1:  # First frame analysis
+                logger.info(f"🎬 First frame from camera {self.camera_id}: "
+                           f"shape={frame.shape}, dtype={frame.dtype}, brightness={brightness:.1f}")
+            
+            # Detect if frame is all one color (stuck camera)
+            std_dev = np.std(gray)
+            if std_dev < 1.0 and self.frame_count % 100 == 0:
+                logger.warning(f"🔴 Camera {self.camera_id}: Possible stuck frame detected (std dev: {std_dev:.2f})")
+            
+        except Exception as e:
+            logger.error(f"Error analyzing frame: {e}")
+    
+    def _save_preview_frame(self, frame: np.ndarray):
+        """Save a preview frame to disk for debugging."""
+        try:
+            timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+            filename = f"frame_{timestamp}_{self.frame_count:06d}.jpg"
+            filepath = os.path.join(self.preview_dir, filename)
+            
+            # Add debug info overlay
+            debug_frame = frame.copy()
+            
+            # Add debug text overlay
+            debug_info = [
+                f"Frame #{self.frame_count}",
+                f"Camera {self.camera_id}",
+                f"Time: {timestamp}",
+                f"Shape: {frame.shape}"
+            ]
+            
+            y_offset = 30
+            for info in debug_info:
+                cv2.putText(
+                    debug_frame,
+                    info,
+                    (10, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 0),  # Green
+                    1
+                )
+                y_offset += 20
+            
+            # Save frame
+            success = cv2.imwrite(filepath, debug_frame)
+            
+            if success:
+                logger.info(f"💾 Saved preview frame: {filename}")
+                
+                # Also save frame info
+                info_file = filepath.replace('.jpg', '_info.txt')
+                with open(info_file, 'w') as f:
+                    f.write(f"Frame #{self.frame_count}\n")
+                    f.write(f"Camera ID: {self.camera_id}\n")
+                    f.write(f"Timestamp: {timestamp}\n")
+                    f.write(f"Shape: {frame.shape}\n")
+                    f.write(f"Data type: {frame.dtype}\n")
+                    f.write(f"Min value: {np.min(frame)}\n")
+                    f.write(f"Max value: {np.max(frame)}\n")
+                    f.write(f"Mean value: {np.mean(frame):.2f}\n")
+                    if self.debug_preview:
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        f.write(f"Brightness: {np.mean(gray):.2f}\n")
+                        f.write(f"Std Dev: {np.std(gray):.2f}\n")
+            else:
+                logger.error(f"Failed to save preview frame: {filepath}")
+            
+            self.last_preview_save = self.frame_count
+            
+        except Exception as e:
+            logger.error(f"Error saving preview frame: {e}")

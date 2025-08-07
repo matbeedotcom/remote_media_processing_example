@@ -50,6 +50,7 @@ from typing import Optional, Dict, Any
 import json
 import cv2
 import numpy as np
+from video_stream_analyzer import VideoStreamAnalyzer
 
 # Add project paths
 project_root = Path(__file__).parent.parent
@@ -286,6 +287,9 @@ def create_charuco_pipeline(
     3. VideoOutputFormatter - Formats output for WebRTC streaming
     """
     pipeline = Pipeline()
+    # Video stream analyzer for detailed frame logging
+    analyzer = VideoStreamAnalyzer(name="FrameAnalyzer", log_interval=30)  # Log every 30 frames
+    pipeline.add_node(analyzer)
     
     # Video frame synchronization
     frame_buffer = VideoFrameBuffer(num_cameras=num_cameras, name="FrameBuffer")

@@ -31,7 +31,10 @@ class RaspberryPiWebRTCClient:
         fps: int = 30,
         auto_reconnect: bool = True,
         max_reconnect_attempts: int = 10,
-        reconnect_delay: float = 5.0
+        reconnect_delay: float = 5.0,
+        debug_preview: bool = False,
+        save_preview_frames: bool = False,
+        preview_dir: Optional[str] = None
     ):
         self.server_url = server_url
         self.width = width
@@ -40,6 +43,9 @@ class RaspberryPiWebRTCClient:
         self.auto_reconnect = auto_reconnect
         self.max_reconnect_attempts = max_reconnect_attempts
         self.reconnect_delay = reconnect_delay
+        self.debug_preview = debug_preview
+        self.save_preview_frames = save_preview_frames
+        self.preview_dir = preview_dir
         
         # WebRTC components
         self.pc: Optional[RTCPeerConnection] = None
@@ -285,7 +291,10 @@ class RaspberryPiWebRTCClient:
                         width=self.width, 
                         height=self.height, 
                         fps=self.fps,
-                        camera_id=camera_idx
+                        camera_id=camera_idx,
+                        debug_preview=self.debug_preview,
+                        save_preview_frames=self.save_preview_frames,
+                        preview_dir=self.preview_dir
                     )
                     self.active_tracks.append(track)
                     self.pc.addTrack(track)
@@ -533,6 +542,15 @@ class RaspberryPiWebRTCClient:
         
         for track_stats in stats['camera_stats']:
             logger.info(f"   • Camera {track_stats['camera_id']}: {track_stats['fps']:.1f} FPS, {track_stats['frame_count']} frames")
+            
+            # Report frame statistics if debug preview is enabled
+            if track_stats.get('frame_stats') and track_stats['frame_count'] > 0:
+                frame_stats = track_stats['frame_stats']
+                avg_brightness = frame_stats['total_brightness'] / track_stats['frame_count']
+                logger.info(f"     🎨 Brightness: min={frame_stats['min_brightness']:.1f}, "
+                           f"max={frame_stats['max_brightness']:.1f}, avg={avg_brightness:.1f}")
+                logger.info(f"     📈 Frame types: blank={frame_stats['blank_frames']}, "
+                           f"dark={frame_stats['dark_frames']}, bright={frame_stats['bright_frames']}")
     
     async def _get_detailed_stats(self) -> Dict[str, Any]:
         """Get detailed client statistics."""
@@ -637,7 +655,9 @@ class RaspberryPiWebRTCClient:
                     width=320, 
                     height=240, 
                     fps=15,
-                    camera_id=camera_idx
+                    camera_id=camera_idx,
+                    debug_preview=True,  # Enable debug for testing
+                    save_preview_frames=False  # Don't save during test
                 )
                 
                 # Try to get a frame

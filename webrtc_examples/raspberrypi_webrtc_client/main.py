@@ -68,15 +68,28 @@ Examples:
     parser.add_argument(
         "--width",
         type=int,
-        default=640,
-        help="Video width in pixels (default: %(default)s)"
+        default=None,
+        help="Video width in pixels (default: auto-detect maximum)"
     )
     
     parser.add_argument(
         "--height", 
         type=int,
-        default=480,
-        help="Video height in pixels (default: %(default)s)"
+        default=None,
+        help="Video height in pixels (default: auto-detect maximum)"
+    )
+    
+    parser.add_argument(
+        "--max-resolution",
+        action="store_true",
+        help="Use maximum available resolution (default for Picamera2)"
+    )
+    
+    parser.add_argument(
+        "--resolution",
+        type=str,
+        choices=['max', '4k', '1080p', '720p', '480p', 'vga'],
+        help="Preset resolution (overrides width/height)"
     )
     
     parser.add_argument(
@@ -124,6 +137,33 @@ Examples:
         help="Enable verbose logging"
     )
     
+    # Debug and preview options
+    parser.add_argument(
+        "--debug-preview",
+        action="store_true",
+        help="Enable frame analysis and debugging (shows frame statistics)"
+    )
+    
+    parser.add_argument(
+        "--save-preview-frames",
+        action="store_true",
+        help="Save preview frames to disk for debugging"
+    )
+    
+    parser.add_argument(
+        "--preview-dir",
+        type=str,
+        default="/tmp/webrtc_preview",
+        help="Directory to save preview frames (default: %(default)s)"
+    )
+    
+    parser.add_argument(
+        "--preview-interval",
+        type=int,
+        default=30,
+        help="Save preview frame every N frames (default: %(default)s)"
+    )
+    
     return parser.parse_args()
 
 
@@ -134,15 +174,74 @@ async def main():
     
     logger = logging.getLogger(__name__)
     
-    # Create client
+    # Set environment variables for preview settings if specified
+    if args.preview_interval:
+        os.environ['PREVIEW_INTERVAL'] = str(args.preview_interval)
+    
+    # Determine resolution
+    width, height = args.width, args.height
+    
+    # Handle resolution presets
+    if args.resolution:
+        resolution_presets = {
+            'max': (None, None),  # Will be auto-detected
+            '4k': (3840, 2160),
+            '1080p': (1920, 1080),
+            '720p': (1280, 720),
+            '480p': (854, 480),
+            'vga': (640, 480)
+        }
+        width, height = resolution_presets[args.resolution]
+    
+    # Create initial client to detect camera capabilities
+    temp_client = RaspberryPiWebRTCClient(
+        server_url=args.server,
+        width=640,  # Temporary resolution
+        height=480,
+        fps=args.fps,
+        auto_reconnect=False
+    )
+    
+    # Detect maximum resolution if requested or if no resolution specified
+    if args.max_resolution or (width is None and height is None) or args.resolution == 'max':
+        # Check if we have a Picamera2
+        for cam_info in temp_client.camera_manager.get_camera_list():
+            if cam_info.type == 'picamera2':
+                # Get camera capabilities
+                capabilities = temp_client.camera_manager.get_camera_capabilities(cam_info.index)
+                max_res = capabilities.get('max_resolution')
+                if max_res:
+                    width, height = max_res
+                    logger.info(f"📷 Using maximum Picamera2 resolution: {width}x{height}")
+                else:
+                    # Use the camera's default resolution
+                    width, height = cam_info.width, cam_info.height
+                    logger.info(f"📷 Using Picamera2 default resolution: {width}x{height}")
+                break
+        else:
+            # No Picamera2 found, use default for OpenCV cameras
+            if width is None or height is None:
+                width, height = 640, 480
+                logger.info(f"📹 No Picamera2 found, using default resolution: {width}x{height}")
+    
+    # Set defaults if still not set
+    if width is None:
+        width = 640
+    if height is None:
+        height = 480
+    
+    # Create the actual client with determined resolution
     client = RaspberryPiWebRTCClient(
         server_url=args.server,
-        width=args.width,
-        height=args.height,
+        width=width,
+        height=height,
         fps=args.fps,
         auto_reconnect=not args.no_reconnect,
         max_reconnect_attempts=args.max_reconnects,
-        reconnect_delay=args.reconnect_delay
+        reconnect_delay=args.reconnect_delay,
+        debug_preview=args.debug_preview,
+        save_preview_frames=args.save_preview_frames,
+        preview_dir=args.preview_dir
     )
     
     # Handle list cameras command
@@ -175,9 +274,23 @@ async def main():
     # Show configuration
     print("=== Raspberry Pi WebRTC Client ===")
     print(f"Server: {args.server}")
-    print(f"Resolution: {args.width}x{args.height} @ {args.fps}fps")
+    print(f"Resolution: {width}x{height} @ {args.fps}fps")
+    if args.max_resolution or args.resolution == 'max':
+        print(f"  🌟 Using maximum available resolution")
     print(f"Selected cameras: {client.selected_cameras}")
     print(f"Auto-reconnect: {not args.no_reconnect}")
+    
+    # Show debug settings if enabled
+    if args.debug_preview or args.save_preview_frames:
+        print("")
+        print("🔍 Debug Settings:")
+        if args.debug_preview:
+            print(f"  • Frame analysis: ENABLED")
+        if args.save_preview_frames:
+            print(f"  • Save preview frames: ENABLED")
+            print(f"  • Preview directory: {args.preview_dir}")
+            print(f"  • Preview interval: every {args.preview_interval} frames")
+    
     print("")
     
     # List available cameras
