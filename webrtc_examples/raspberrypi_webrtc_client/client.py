@@ -203,27 +203,38 @@ class RaspberryPiWebRTCClient:
             # Clean up any existing connections and tracks first
             await self._cleanup_connection()
             
-            # Create peer connection with proper RTCConfiguration
+            # Create peer connection with enhanced ICE configuration
+            ice_servers = [
+                RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
+                RTCIceServer(urls=["stun:stun1.l.google.com:19302"]),
+                RTCIceServer(urls=["stun:stun.cloudflare.com:3478"]),  # Additional STUN server
+            ]
+            
             config = RTCConfiguration(
-                iceServers=[
-                    RTCIceServer(urls="stun:stun.l.google.com:19302"),
-                    RTCIceServer(urls="stun:stun1.l.google.com:19302")
-                ]
+                iceServers=ice_servers,
+                iceTransportPolicy="all",  # Use both STUN and TURN if available
+                bundlePolicy="balanced",   # Better for single video track
+                rtcpMuxPolicy="require"     # Standard for modern WebRTC
             )
+            
+            logger.debug(f"🌐 Using {len(ice_servers)} STUN servers for ICE negotiation")
             self.pc = RTCPeerConnection(config)
             
-            # Setup event handlers
+            # Setup event handlers with enhanced debugging
             @self.pc.on("connectionstatechange")
             async def on_connectionstatechange():
                 state = self.pc.connectionState
-                logger.info(f"🔗 Connection state: {state}")
+                ice_state = self.pc.iceConnectionState
+                logger.info(f"🔗 Connection state: {state} | ICE state: {ice_state}")
                 
                 if state == "connected":
                     self.connected = True
                     self.reconnect_attempts = 0
                     self.connection_start_time = time.time()
                     self.stats['total_connections'] += 1
+                    logger.info(f"🎉 WebRTC connection established successfully!")
                 elif state in ["disconnected", "failed", "closed"]:
+                    logger.warning(f"⚠️  Connection state changed to {state} (ICE: {ice_state})")
                     if self.connected:
                         self.stats['total_disconnections'] += 1
                         if self.connection_start_time:
@@ -232,7 +243,30 @@ class RaspberryPiWebRTCClient:
             
             @self.pc.on("icegatheringstatechange")
             async def on_icegatheringstatechange():
-                logger.debug(f"ICE gathering state: {self.pc.iceGatheringState}")
+                logger.info(f"🧊 ICE gathering state: {self.pc.iceGatheringState}")
+            
+            @self.pc.on("iceconnectionstatechange")
+            async def on_iceconnectionstatechange():
+                ice_state = self.pc.iceConnectionState
+                logger.info(f"🌍 ICE connection state: {ice_state}")
+                
+                if ice_state == "failed":
+                    logger.error(f"❌ ICE connection failed - this usually indicates network connectivity issues")
+                elif ice_state == "disconnected":
+                    logger.warning(f"⚠️  ICE connection disconnected")
+                elif ice_state == "connected":
+                    logger.info(f"✅ ICE connection established")
+                elif ice_state == "completed":
+                    logger.info(f"✨ ICE connection completed (optimal path found)")
+            
+            # Add track event debugging
+            @self.pc.on("track")
+            def on_track(track):
+                logger.info(f"📡 Received remote track: {track.kind} (ID: {track.id})")
+                
+                @track.on("ended")
+                def on_ended():
+                    logger.info(f"🔚 Remote track ended: {track.kind} (ID: {track.id})")
             
             # Add video tracks for selected cameras
             for camera_idx in self.selected_cameras:
@@ -285,12 +319,17 @@ class RaspberryPiWebRTCClient:
             await self.websocket.send(json.dumps(offer_message))
             logger.info("📤 Sent WebRTC offer")
             
-            # Wait for answer
+            # Wait for answer with better error handling
             try:
-                response = await asyncio.wait_for(self.websocket.recv(), timeout=10.0)
+                logger.debug("⏳ Waiting for WebRTC answer from server...")
+                response = await asyncio.wait_for(self.websocket.recv(), timeout=15.0)  # Increased timeout
                 answer_data = json.loads(response)
+                logger.debug(f"📨 Received response: {answer_data.get('type', 'unknown')}")
             except asyncio.TimeoutError:
-                logger.error("Timeout waiting for WebRTC answer")
+                logger.error("⏰ Timeout waiting for WebRTC answer (15s) - server may be unresponsive")
+                return False
+            except json.JSONDecodeError as e:
+                logger.error(f"📜 Invalid JSON response from server: {e}")
                 return False
             
             if answer_data.get("type") == "answer":
@@ -301,9 +340,22 @@ class RaspberryPiWebRTCClient:
                 await self.pc.setRemoteDescription(answer)
                 logger.info("📥 Received and set WebRTC answer")
                 
+                # Wait a bit for ICE to establish before considering connection successful
+                logger.debug("⏳ Waiting for ICE connection to establish...")
+                await asyncio.sleep(2.0)  # Give ICE time to connect
+                
+                # Check if connection is still valid
+                if self.pc.connectionState in ["closed", "failed"]:
+                    logger.error(f"❌ Connection failed during ICE negotiation: {self.pc.connectionState}")
+                    return False
+                
                 return True
+            elif answer_data.get("type") == "error":
+                error_msg = answer_data.get("message", "Unknown error")
+                logger.error(f"❌ Server returned error: {error_msg}")
+                return False
             else:
-                logger.error(f"Unexpected response: {answer_data}")
+                logger.error(f"❓ Unexpected response type: {answer_data}")
                 return False
                 
         except Exception as e:
@@ -359,12 +411,37 @@ class RaspberryPiWebRTCClient:
         await self.stop()
     
     async def _connection_loop(self):
-        """Main connection monitoring loop."""
+        """Main connection monitoring loop with enhanced stability monitoring."""
         last_stats_time = time.time()
         stats_interval = 30.0  # Report stats every 30 seconds
         
+        # Wait for stable connection
+        logger.debug("⏳ Waiting for connection to stabilize...")
+        stable_checks = 0
+        max_stable_checks = 10  # Check for 1 second (10 * 0.1s)
+        
+        while stable_checks < max_stable_checks and not self.shutdown_requested:
+            if self.pc.connectionState == "connected" and self.pc.iceConnectionState in ["connected", "completed"]:
+                stable_checks += 1
+            else:
+                stable_checks = 0  # Reset if connection becomes unstable
+                if self.pc.connectionState in ["closed", "failed"]:
+                    logger.error(f"❌ Connection failed during stabilization: {self.pc.connectionState}")
+                    return
+            await asyncio.sleep(0.1)
+        
+        if stable_checks >= max_stable_checks:
+            logger.info("✨ Connection stabilized - entering monitoring loop")
+        else:
+            logger.warning("⚠️  Connection did not stabilize - continuing anyway")
+        
         while self.connected and not self.shutdown_requested:
             try:
+                # Check connection health
+                if self.pc.connectionState in ["closed", "failed"]:
+                    logger.warning(f"⚠️  Connection state changed to {self.pc.connectionState} - breaking loop")
+                    break
+                
                 # Handle WebSocket messages
                 if self.websocket:
                     try:
@@ -373,7 +450,7 @@ class RaspberryPiWebRTCClient:
                     except asyncio.TimeoutError:
                         pass  # No message, continue
                     except websockets.exceptions.ConnectionClosed:
-                        logger.warning("WebSocket connection closed")
+                        logger.warning("🔌 WebSocket connection closed")
                         break
                 
                 # Report statistics periodically
