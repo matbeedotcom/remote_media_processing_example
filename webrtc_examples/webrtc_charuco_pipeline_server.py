@@ -18,9 +18,20 @@ Features:
 - Web-based client interface
 
 Usage:
-    python webrtc_charuco_pipeline_server.py
+    python webrtc_charuco_pipeline_server.py [options]
+    python webrtc_charuco_pipeline_server.py --host 0.0.0.0 --port 8081 --cameras 4
+    python webrtc_charuco_pipeline_server.py --calibration-file my_calibration.json
+    SERVER_HOST=192.168.1.100 python webrtc_charuco_pipeline_server.py
 
-Environment variables:
+Command line options:
+    --host HOST              Server host address (default: 0.0.0.0)
+    --port, -p PORT          Server port (default: 8081)
+    --cameras, -c COUNT      Number of expected cameras (default: 4)
+    --calibration-file, -f FILE  Calibration storage file (default: charuco_calibration.json)
+    --output-width, -w WIDTH     Warped output width in pixels (default: 1920)
+    --output-height, -H HEIGHT   Warped output height in pixels (default: 1080)
+
+Environment variables (used as fallbacks):
     SERVER_HOST=hostname (default: 0.0.0.0) - Server host
     SERVER_PORT=port (default: 8081) - Server port  
     NUM_CAMERAS=count (default: 4) - Number of expected cameras
@@ -29,6 +40,7 @@ Environment variables:
     OUTPUT_HEIGHT=pixels (default: 1080) - Warped output height
 """
 
+import argparse
 import asyncio
 import logging
 import os
@@ -357,16 +369,85 @@ async def create_charuco_webrtc_server(
     return server
 
 
+def parse_arguments():
+    """Parse command line arguments with environment variable fallbacks."""
+    parser = argparse.ArgumentParser(
+        description="WebRTC ChAruco Calibration Server - Real-time multi-camera ChAruco calibration and perspective warping",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Environment Variables (used as fallbacks if CLI args not provided):
+  SERVER_HOST=hostname        Server host (default: 0.0.0.0)
+  SERVER_PORT=port           Server port (default: 8081)
+  NUM_CAMERAS=count          Number of expected cameras (default: 4)
+  CALIBRATION_FILE=path      Calibration storage file (default: charuco_calibration.json)
+  OUTPUT_WIDTH=pixels        Warped output width (default: 1920)
+  OUTPUT_HEIGHT=pixels       Warped output height (default: 1080)
+
+Examples:
+  python webrtc_charuco_pipeline_server.py --host 0.0.0.0 --port 8081 --cameras 4
+  python webrtc_charuco_pipeline_server.py --calibration-file my_calibration.json
+  SERVER_HOST=192.168.1.100 python webrtc_charuco_pipeline_server.py
+        """
+    )
+    
+    parser.add_argument(
+        "--host", 
+        type=str,
+        default=os.environ.get("SERVER_HOST", "0.0.0.0"),
+        help="Server host address (default: 0.0.0.0, env: SERVER_HOST)"
+    )
+    
+    parser.add_argument(
+        "--port", "-p",
+        type=int,
+        default=int(os.environ.get("SERVER_PORT", "8081")),
+        help="Server port (default: 8081, env: SERVER_PORT)"
+    )
+    
+    parser.add_argument(
+        "--cameras", "-c",
+        type=int,
+        default=int(os.environ.get("NUM_CAMERAS", "4")),
+        help="Number of expected cameras (default: 4, env: NUM_CAMERAS)"
+    )
+    
+    parser.add_argument(
+        "--calibration-file", "-f",
+        type=str,
+        default=os.environ.get("CALIBRATION_FILE", "charuco_calibration.json"),
+        help="Calibration storage file path (default: charuco_calibration.json, env: CALIBRATION_FILE)"
+    )
+    
+    parser.add_argument(
+        "--output-width", "-w",
+        type=int,
+        default=int(os.environ.get("OUTPUT_WIDTH", "1920")),
+        help="Warped output width in pixels (default: 1920, env: OUTPUT_WIDTH)"
+    )
+    
+    parser.add_argument(
+        "--output-height", "-H",
+        type=int,
+        default=int(os.environ.get("OUTPUT_HEIGHT", "1080")),
+        help="Warped output height in pixels (default: 1080, env: OUTPUT_HEIGHT)"
+    )
+    
+    return parser.parse_args()
+
+
 async def main():
     """Main server function."""
     
-    # Configuration from environment
-    SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
-    SERVER_PORT = int(os.environ.get("SERVER_PORT", "8081"))
-    NUM_CAMERAS = int(os.environ.get("NUM_CAMERAS", "4"))
-    CALIBRATION_FILE = os.environ.get("CALIBRATION_FILE", "charuco_calibration.json")
-    OUTPUT_WIDTH = int(os.environ.get("OUTPUT_WIDTH", "1920"))
-    OUTPUT_HEIGHT = int(os.environ.get("OUTPUT_HEIGHT", "1080"))
+    # Parse command line arguments and environment variables
+    args = parse_arguments()
+    
+    # Use parsed arguments
+    SERVER_HOST = args.host
+    SERVER_PORT = args.port
+    NUM_CAMERAS = args.cameras
+    CALIBRATION_FILE = args.calibration_file
+    OUTPUT_WIDTH = args.output_width
+    OUTPUT_HEIGHT = args.output_height
     
     logger.info("=== ChAruco WebRTC Calibration Server ===")
     logger.info(f"Server: {SERVER_HOST}:{SERVER_PORT}")

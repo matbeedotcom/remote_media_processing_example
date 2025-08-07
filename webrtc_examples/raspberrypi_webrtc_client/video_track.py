@@ -28,6 +28,7 @@ if HAS_PICAMERA2:
 # Global camera instance management for picamera2
 _picamera_instances = {}
 _picamera_lock = {}
+_picamera_in_use = {}
 
 
 class CameraVideoTrack(VideoStreamTrack):

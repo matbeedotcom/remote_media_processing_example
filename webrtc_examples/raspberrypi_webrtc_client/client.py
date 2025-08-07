@@ -147,10 +147,43 @@ class RaspberryPiWebRTCClient:
         logger.info(f"🎯 Selected cameras: {self.selected_cameras}")
         return True
     
+    async def _cleanup_connection(self):
+        """Clean up existing connection and tracks."""
+        # Stop and clean up existing video tracks
+        if self.active_tracks:
+            logger.debug(f"🧹 Cleaning up {len(self.active_tracks)} existing video tracks")
+            for track in self.active_tracks:
+                try:
+                    track.stop()
+                except Exception as e:
+                    logger.debug(f"Error stopping track: {e}")
+            self.active_tracks.clear()
+        
+        # Close existing peer connection
+        if self.pc:
+            try:
+                await self.pc.close()
+            except Exception as e:
+                logger.debug(f"Error closing peer connection: {e}")
+            self.pc = None
+        
+        # Close existing websocket
+        if self.websocket:
+            try:
+                await self.websocket.close()
+            except Exception as e:
+                logger.debug(f"Error closing websocket: {e}")
+            self.websocket = None
+        
+        self.connected = False
+    
     async def connect(self) -> bool:
         """Connect to the WebRTC server."""
         try:
             logger.info(f"🔌 Connecting to {self.server_url}")
+            
+            # Clean up any existing connections and tracks first
+            await self._cleanup_connection()
             
             # Create peer connection with proper RTCConfiguration
             config = RTCConfiguration(
