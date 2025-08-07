@@ -1,0 +1,488 @@
+"""
+Raspberry Pi WebRTC Client
+
+Main client class for streaming camera feeds to the ChAruco calibration server.
+Handles WebRTC connection, camera management, and automatic reconnection.
+"""
+
+import asyncio
+import json
+import logging
+import signal
+import time
+from typing import List, Optional, Dict, Any
+import websockets
+from aiortc import RTCPeerConnection, RTCSessionDescription
+
+from .camera_manager import CameraManager
+from .video_track import CameraVideoTrack
+
+logger = logging.getLogger(__name__)
+
+
+class RaspberryPiWebRTCClient:
+    """WebRTC client for Raspberry Pi camera streaming."""
+    
+    def __init__(
+        self,
+        server_url: str = "ws://localhost:8081/ws",
+        width: int = 640,
+        height: int = 480,
+        fps: int = 30,
+        auto_reconnect: bool = True,
+        max_reconnect_attempts: int = 10,
+        reconnect_delay: float = 5.0
+    ):
+        self.server_url = server_url
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.auto_reconnect = auto_reconnect
+        self.max_reconnect_attempts = max_reconnect_attempts
+        self.reconnect_delay = reconnect_delay
+        
+        # WebRTC components
+        self.pc: Optional[RTCPeerConnection] = None
+        self.websocket = None
+        
+        # Camera management
+        self.camera_manager = CameraManager()
+        self.active_tracks: List[CameraVideoTrack] = []
+        self.selected_cameras: List[int] = []
+        
+        # Connection state
+        self.connected = False
+        self.reconnect_attempts = 0
+        self.shutdown_requested = False
+        self.connection_start_time = None
+        
+        # Statistics
+        self.stats = {
+            'total_connections': 0,
+            'total_disconnections': 0,
+            'total_frames_sent': 0,
+            'connection_uptime': 0
+        }
+        
+        # Setup signal handlers
+        self._setup_signal_handlers()
+    
+    def _setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown."""
+        def signal_handler(signum, frame):
+            logger.info(f"Received signal {signum}, shutting down...")
+            self.shutdown_requested = True
+            # Create shutdown task if we're in an event loop
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self.stop())
+            except RuntimeError:
+                pass  # No event loop running
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+    
+    def list_cameras(self):
+        """List all available cameras."""
+        cameras = self.camera_manager.get_camera_list()
+        
+        if not cameras:
+            logger.warning("No cameras detected!")
+            print("No cameras found. Please check your camera connections.")
+            return
+        
+        print("📹 Available cameras:")
+        for cam in cameras:
+            capabilities = self.camera_manager.get_camera_capabilities(cam.index)
+            print(f"  [{cam.index}] {cam.name} ({cam.type})")
+            print(f"      Resolution: {cam.width}x{cam.height} @ {cam.fps}fps")
+            if cam.device_path:
+                print(f"      Device: {cam.device_path}")
+            
+            # Show additional capabilities
+            if 'supported_resolutions' in capabilities:
+                resolutions = capabilities['supported_resolutions'][:3]  # Show first 3
+                res_str = ', '.join([f"{w}x{h}" for w, h in resolutions])
+                print(f"      Supported: {res_str}{'...' if len(capabilities['supported_resolutions']) > 3 else ''}")
+    
+    def select_cameras(self, camera_spec: str) -> bool:
+        """Select cameras to stream from specification."""
+        self.selected_cameras.clear()
+        
+        if camera_spec.lower() == "all":
+            # Select all available cameras
+            self.selected_cameras = list(self.camera_manager.cameras.keys())
+        else:
+            # Parse comma-separated camera indices
+            try:
+                indices = [int(x.strip()) for x in camera_spec.split(",")]
+                for idx in indices:
+                    if idx in self.camera_manager.cameras:
+                        self.selected_cameras.append(idx)
+                    else:
+                        logger.warning(f"Camera {idx} not found")
+            except ValueError:
+                logger.error(f"Invalid camera specification: {camera_spec}")
+                return False
+        
+        if not self.selected_cameras:
+            logger.error("No valid cameras selected")
+            return False
+        
+        # Validate selected cameras
+        valid_cameras = []
+        for cam_idx in self.selected_cameras:
+            if self.camera_manager.validate_camera(cam_idx):
+                valid_cameras.append(cam_idx)
+            else:
+                logger.warning(f"Camera {cam_idx} validation failed")
+        
+        self.selected_cameras = valid_cameras
+        
+        if not self.selected_cameras:
+            logger.error("No cameras passed validation")
+            return False
+        
+        logger.info(f"🎯 Selected cameras: {self.selected_cameras}")
+        return True
+    
+    async def connect(self) -> bool:
+        """Connect to the WebRTC server."""
+        try:
+            logger.info(f"🔌 Connecting to {self.server_url}")
+            
+            # Create peer connection
+            self.pc = RTCPeerConnection({
+                "iceServers": [
+                    {"urls": "stun:stun.l.google.com:19302"},
+                    {"urls": "stun:stun1.l.google.com:19302"}
+                ]
+            })
+            
+            # Setup event handlers
+            @self.pc.on("connectionstatechange")
+            async def on_connectionstatechange():
+                state = self.pc.connectionState
+                logger.info(f"🔗 Connection state: {state}")
+                
+                if state == "connected":
+                    self.connected = True
+                    self.reconnect_attempts = 0
+                    self.connection_start_time = time.time()
+                    self.stats['total_connections'] += 1
+                elif state in ["disconnected", "failed", "closed"]:
+                    if self.connected:
+                        self.stats['total_disconnections'] += 1
+                        if self.connection_start_time:
+                            self.stats['connection_uptime'] += time.time() - self.connection_start_time
+                    self.connected = False
+            
+            @self.pc.on("icegatheringstatechange")
+            async def on_icegatheringstatechange():
+                logger.debug(f"ICE gathering state: {self.pc.iceGatheringState}")
+            
+            # Add video tracks for selected cameras
+            for camera_idx in self.selected_cameras:
+                camera_info = self.camera_manager.get_camera(camera_idx)
+                if camera_info:
+                    track = CameraVideoTrack(
+                        camera_info, 
+                        width=self.width, 
+                        height=self.height, 
+                        fps=self.fps,
+                        camera_id=camera_idx
+                    )
+                    self.active_tracks.append(track)
+                    self.pc.addTrack(track)
+                    logger.info(f"📡 Added video track for camera {camera_idx} ({camera_info.name})")
+            
+            if not self.active_tracks:
+                logger.error("No camera tracks created")
+                return False
+            
+            # Connect WebSocket
+            try:
+                self.websocket = await asyncio.wait_for(
+                    websockets.connect(self.server_url),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("WebSocket connection timeout")
+                return False
+            
+            # Create and send offer
+            offer = await self.pc.createOffer()
+            await self.pc.setLocalDescription(offer)
+            
+            offer_message = {
+                "type": "offer",
+                "sdp": offer.sdp,
+                "cameras": [
+                    {
+                        "id": track.camera_id,
+                        "name": track.camera_info.name,
+                        "type": track.camera_info.type,
+                        "resolution": [track.width, track.height],
+                        "fps": track.fps
+                    }
+                    for track in self.active_tracks
+                ]
+            }
+            
+            await self.websocket.send(json.dumps(offer_message))
+            logger.info("📤 Sent WebRTC offer")
+            
+            # Wait for answer
+            try:
+                response = await asyncio.wait_for(self.websocket.recv(), timeout=10.0)
+                answer_data = json.loads(response)
+            except asyncio.TimeoutError:
+                logger.error("Timeout waiting for WebRTC answer")
+                return False
+            
+            if answer_data.get("type") == "answer":
+                answer = RTCSessionDescription(
+                    sdp=answer_data["sdp"],
+                    type=answer_data["type"]
+                )
+                await self.pc.setRemoteDescription(answer)
+                logger.info("📥 Received and set WebRTC answer")
+                
+                return True
+            else:
+                logger.error(f"Unexpected response: {answer_data}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Connection failed: {e}")
+            return False
+    
+    async def run(self):
+        """Main client loop with automatic reconnection."""
+        logger.info(f"🚀 Starting WebRTC client with {len(self.selected_cameras)} camera(s)")
+        
+        while not self.shutdown_requested and self.reconnect_attempts < self.max_reconnect_attempts:
+            try:
+                # Attempt connection
+                success = await self.connect()
+                if not success:
+                    if self.auto_reconnect:
+                        self.reconnect_attempts += 1
+                        logger.warning(f"Connection failed, attempt {self.reconnect_attempts}/{self.max_reconnect_attempts}")
+                        await asyncio.sleep(self.reconnect_delay)
+                        continue
+                    else:
+                        break
+                
+                logger.info("✅ Connected to WebRTC server")
+                logger.info("🎬 Streaming video from cameras...")
+                
+                # Monitor connection and handle messages
+                await self._connection_loop()
+                
+                # Connection lost
+                if not self.shutdown_requested and self.auto_reconnect:
+                    self.reconnect_attempts += 1
+                    logger.warning(f"Connection lost, reconnecting... ({self.reconnect_attempts}/{self.max_reconnect_attempts})")
+                    await self._cleanup_connection()
+                    await asyncio.sleep(self.reconnect_delay)
+                else:
+                    break
+                
+            except KeyboardInterrupt:
+                logger.info("Received shutdown signal")
+                break
+            except Exception as e:
+                logger.error(f"Unexpected error in main loop: {e}")
+                if self.auto_reconnect:
+                    self.reconnect_attempts += 1
+                    await asyncio.sleep(self.reconnect_delay)
+                else:
+                    break
+        
+        if self.reconnect_attempts >= self.max_reconnect_attempts:
+            logger.error("Max reconnection attempts reached, giving up")
+        
+        await self.stop()
+    
+    async def _connection_loop(self):
+        """Main connection monitoring loop."""
+        last_stats_time = time.time()
+        stats_interval = 30.0  # Report stats every 30 seconds
+        
+        while self.connected and not self.shutdown_requested:
+            try:
+                # Handle WebSocket messages
+                if self.websocket:
+                    try:
+                        message = await asyncio.wait_for(self.websocket.recv(), timeout=1.0)
+                        await self._handle_message(message)
+                    except asyncio.TimeoutError:
+                        pass  # No message, continue
+                    except websockets.exceptions.ConnectionClosed:
+                        logger.warning("WebSocket connection closed")
+                        break
+                
+                # Report statistics periodically
+                current_time = time.time()
+                if current_time - last_stats_time >= stats_interval:
+                    await self._report_stats()
+                    last_stats_time = current_time
+                
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                logger.error(f"Error in connection loop: {e}")
+                break
+    
+    async def _handle_message(self, message: str):
+        """Handle incoming WebSocket messages."""
+        try:
+            data = json.loads(message)
+            message_type = data.get("type")
+            
+            if message_type == "ping":
+                # Respond to ping
+                pong = {"type": "pong", "timestamp": time.time()}
+                await self.websocket.send(json.dumps(pong))
+            
+            elif message_type == "stats_request":
+                # Send statistics
+                stats = await self._get_detailed_stats()
+                response = {"type": "stats_response", "stats": stats}
+                await self.websocket.send(json.dumps(response))
+            
+            else:
+                logger.debug(f"Received message: {data}")
+                
+        except Exception as e:
+            logger.error(f"Error handling message: {e}")
+    
+    async def _report_stats(self):
+        """Report client statistics."""
+        stats = await self._get_detailed_stats()
+        logger.info("📊 Client Statistics:")
+        logger.info(f"   • Connections: {stats['total_connections']}")
+        logger.info(f"   • Active cameras: {len(self.active_tracks)}")
+        logger.info(f"   • Connection uptime: {stats['current_uptime']:.1f}s")
+        
+        for track_stats in stats['camera_stats']:
+            logger.info(f"   • Camera {track_stats['camera_id']}: {track_stats['fps']:.1f} FPS, {track_stats['frame_count']} frames")
+    
+    async def _get_detailed_stats(self) -> Dict[str, Any]:
+        """Get detailed client statistics."""
+        current_uptime = 0
+        if self.connected and self.connection_start_time:
+            current_uptime = time.time() - self.connection_start_time
+        
+        camera_stats = [track.get_stats() for track in self.active_tracks]
+        
+        return {
+            'connected': self.connected,
+            'total_connections': self.stats['total_connections'],
+            'total_disconnections': self.stats['total_disconnections'],
+            'reconnect_attempts': self.reconnect_attempts,
+            'current_uptime': current_uptime,
+            'total_uptime': self.stats['connection_uptime'] + current_uptime,
+            'server_url': self.server_url,
+            'selected_cameras': self.selected_cameras,
+            'camera_stats': camera_stats,
+            'stream_config': {
+                'width': self.width,
+                'height': self.height,
+                'fps': self.fps
+            }
+        }
+    
+    async def _cleanup_connection(self):
+        """Cleanup current connection without stopping cameras."""
+        logger.debug("Cleaning up connection...")
+        
+        self.connected = False
+        
+        # Close peer connection
+        if self.pc:
+            try:
+                await self.pc.close()
+            except Exception as e:
+                logger.error(f"Error closing peer connection: {e}")
+            self.pc = None
+        
+        # Close WebSocket
+        if self.websocket:
+            try:
+                await self.websocket.close()
+            except Exception as e:
+                logger.error(f"Error closing websocket: {e}")
+            self.websocket = None
+    
+    async def stop(self):
+        """Stop the client and cleanup all resources."""
+        logger.info("🛑 Stopping WebRTC client...")
+        
+        self.shutdown_requested = True
+        self.connected = False
+        
+        # Stop all camera tracks
+        for track in self.active_tracks:
+            try:
+                track.stop()
+            except Exception as e:
+                logger.error(f"Error stopping track: {e}")
+        self.active_tracks.clear()
+        
+        # Cleanup connection
+        await self._cleanup_connection()
+        
+        # Final statistics
+        final_stats = await self._get_detailed_stats()
+        logger.info("📊 Final Statistics:")
+        logger.info(f"   • Total connections: {final_stats['total_connections']}")
+        logger.info(f"   • Total uptime: {final_stats['total_uptime']:.1f}s")
+        logger.info(f"   • Cameras used: {len(self.selected_cameras)}")
+        
+        logger.info("✅ Client stopped")
+    
+    def refresh_cameras(self):
+        """Refresh the camera list."""
+        logger.info("🔄 Refreshing camera list...")
+        self.camera_manager.refresh_cameras()
+    
+    async def test_cameras(self) -> Dict[int, bool]:
+        """Test all selected cameras and return results."""
+        logger.info("🧪 Testing cameras...")
+        results = {}
+        
+        for camera_idx in self.selected_cameras:
+            try:
+                camera_info = self.camera_manager.get_camera(camera_idx)
+                if not camera_info:
+                    results[camera_idx] = False
+                    continue
+                
+                # Create a temporary track to test the camera
+                test_track = CameraVideoTrack(
+                    camera_info, 
+                    width=320, 
+                    height=240, 
+                    fps=15,
+                    camera_id=camera_idx
+                )
+                
+                # Try to get a frame
+                try:
+                    frame = await test_track.recv()
+                    results[camera_idx] = frame is not None
+                    logger.info(f"✅ Camera {camera_idx} test passed")
+                except Exception as e:
+                    logger.error(f"❌ Camera {camera_idx} test failed: {e}")
+                    results[camera_idx] = False
+                finally:
+                    test_track.stop()
+                    
+            except Exception as e:
+                logger.error(f"Error testing camera {camera_idx}: {e}")
+                results[camera_idx] = False
+        
+        return results
