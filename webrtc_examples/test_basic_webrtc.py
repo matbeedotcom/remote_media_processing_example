@@ -20,6 +20,7 @@ from remotemedia.core.pipeline import Pipeline
 from remotemedia.core.node import Node
 from remotemedia.webrtc import WebRTCServer, WebRTCConfig
 from remotemedia.nodes import PassThroughNode
+from video_stream_analyzer import VideoStreamAnalyzer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +56,10 @@ def create_simple_pipeline():
     """Create a simple pass-through pipeline for testing."""
     pipeline = Pipeline()
     
+    # Video stream analyzer for detailed frame logging
+    analyzer = VideoStreamAnalyzer(name="FrameAnalyzer", log_interval=30)  # Log every 30 frames
+    pipeline.add_node(analyzer)
+    
     # Simple video processor
     video_processor = SimpleVideoProcessor(name="VideoProcessor")
     pipeline.add_node(video_processor)
@@ -63,7 +68,7 @@ def create_simple_pipeline():
     pass_through = PassThroughNode(name="PassThrough")
     pipeline.add_node(pass_through)
     
-    logger.info("🔧 Created simple test pipeline")
+    logger.info("🔧 Created simple test pipeline with video stream analyzer")
     return pipeline
 
 
