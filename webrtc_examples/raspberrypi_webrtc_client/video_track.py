@@ -181,10 +181,14 @@ class CameraVideoTrack(VideoStreamTrack):
         """Receive the next video frame."""
         # Handle camera errors
         if self.error_count >= self.max_errors:
-            return self._create_error_frame("Too many camera errors")
+            error_frame = self._create_error_frame("Too many camera errors")
+            logger.debug(f"📤 Sending error frame: too many errors")
+            return error_frame
         
         if self.camera is None:
-            return self._create_error_frame("Camera not initialized")
+            error_frame = self._create_error_frame("Camera not initialized")
+            logger.debug(f"📤 Sending error frame: camera not initialized")
+            return error_frame
         
         # Prevent concurrent access (only for OpenCV cameras)
         if self.camera_info.type == 'opencv' and self.camera_lock:
@@ -230,6 +234,11 @@ class CameraVideoTrack(VideoStreamTrack):
             video_frame = VideoFrame.from_ndarray(frame, format="bgr24")
             video_frame.pts = self.frame_count
             video_frame.time_base = fractions.Fraction(1, self.fps)
+            
+            # Log frame sending periodically
+            if self.frame_count % 30 == 0 or self.frame_count <= 5:
+                logger.info(f"📤 Sending video frame #{self.frame_count} to WebRTC: {frame.shape} {frame.dtype} → PTS={video_frame.pts}")
+            
             return video_frame
         except Exception as e:
             logger.error(f"Error creating VideoFrame: {e}")
@@ -238,6 +247,7 @@ class CameraVideoTrack(VideoStreamTrack):
             video_frame = VideoFrame.from_ndarray(black_frame, format="bgr24")
             video_frame.pts = self.frame_count
             video_frame.time_base = fractions.Fraction(1, self.fps)
+            logger.debug(f"📤 Sending fallback black frame #{self.frame_count}")
             return video_frame
     
     def _capture_frame(self) -> np.ndarray:

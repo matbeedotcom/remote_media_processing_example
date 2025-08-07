@@ -254,16 +254,18 @@ class RaspberryPiWebRTCClient:
             @self.pc.on("iceconnectionstatechange")
             async def on_iceconnectionstatechange():
                 ice_state = self.pc.iceConnectionState
-                logger.info(f"🌍 ICE connection state: {ice_state}")
+                connection_state = self.pc.connectionState
+                logger.info(f"🌍 ICE connection state: {ice_state} | Connection state: {connection_state}")
                 
                 if ice_state == "failed":
                     logger.error(f"❌ ICE connection failed - this usually indicates network connectivity issues")
+                    logger.error(f"   ❌ Media path cannot be established - video frames will not reach server")
                 elif ice_state == "disconnected":
-                    logger.warning(f"⚠️  ICE connection disconnected")
+                    logger.warning(f"⚠️  ICE connection disconnected - media transmission stopped")
                 elif ice_state == "connected":
-                    logger.info(f"✅ ICE connection established")
+                    logger.info(f"✅ ICE connection established - media path ready for transmission")
                 elif ice_state == "completed":
-                    logger.info(f"✨ ICE connection completed (optimal path found)")
+                    logger.info(f"✨ ICE connection completed (optimal path found) - video frames should now reach server")
             
             # Add track event debugging
             @self.pc.on("track")
@@ -351,9 +353,21 @@ class RaspberryPiWebRTCClient:
                 await asyncio.sleep(2.0)  # Give ICE time to connect
                 
                 # Check if connection is still valid
-                if self.pc.connectionState in ["closed", "failed"]:
-                    logger.error(f"❌ Connection failed during ICE negotiation: {self.pc.connectionState}")
+                connection_state = self.pc.connectionState
+                ice_state = self.pc.iceConnectionState
+                logger.info(f"🔍 After ICE wait: Connection={connection_state}, ICE={ice_state}")
+                
+                if connection_state in ["closed", "failed"]:
+                    logger.error(f"❌ Connection failed during ICE negotiation: {connection_state}")
                     return False
+                
+                if ice_state in ["failed", "disconnected"]:
+                    logger.error(f"❌ ICE connection failed: {ice_state} - video frames cannot reach server")
+                    logger.error(f"   ℹ️  This is likely a network/firewall issue blocking UDP traffic")
+                    return False
+                
+                if ice_state not in ["connected", "completed"]:
+                    logger.warning(f"⚠️  ICE not fully connected ({ice_state}) - video transmission may be unreliable")
                 
                 return True
             elif answer_data.get("type") == "error":
@@ -427,19 +441,33 @@ class RaspberryPiWebRTCClient:
         max_stable_checks = 10  # Check for 1 second (10 * 0.1s)
         
         while stable_checks < max_stable_checks and not self.shutdown_requested:
-            if self.pc.connectionState == "connected" and self.pc.iceConnectionState in ["connected", "completed"]:
+            connection_state = self.pc.connectionState
+            ice_state = self.pc.iceConnectionState
+            
+            if connection_state == "connected" and ice_state in ["connected", "completed"]:
                 stable_checks += 1
             else:
                 stable_checks = 0  # Reset if connection becomes unstable
-                if self.pc.connectionState in ["closed", "failed"]:
-                    logger.error(f"❌ Connection failed during stabilization: {self.pc.connectionState}")
+                if connection_state in ["closed", "failed"]:
+                    logger.error(f"❌ Connection failed during stabilization: {connection_state}")
                     return
+                if ice_state in ["failed", "disconnected"]:
+                    logger.error(f"❌ ICE failed during stabilization: {ice_state}")
+                    return
+                    
+                # Log unstable connection details
+                if stable_checks == 0:
+                    logger.debug(f"🔄 Connection not stable: Connection={connection_state}, ICE={ice_state}")
+            
             await asyncio.sleep(0.1)
         
         if stable_checks >= max_stable_checks:
             logger.info("✨ Connection stabilized - entering monitoring loop")
+            logger.info(f"   🌍 Final state: Connection={self.pc.connectionState}, ICE={self.pc.iceConnectionState}")
         else:
             logger.warning("⚠️  Connection did not stabilize - continuing anyway")
+            logger.warning(f"   🌍 Current state: Connection={self.pc.connectionState}, ICE={self.pc.iceConnectionState}")
+            logger.warning(f"   💡 Video frames may not reach server if ICE is not 'connected' or 'completed'")
         
         while self.connected and not self.shutdown_requested:
             try:
@@ -459,10 +487,11 @@ class RaspberryPiWebRTCClient:
                         logger.warning("🔌 WebSocket connection closed")
                         break
                 
-                # Report statistics periodically
+                # Report statistics and connection state periodically
                 current_time = time.time()
                 if current_time - last_stats_time >= stats_interval:
                     await self._report_stats()
+                    logger.info(f"🔍 Connection health: Connection={self.pc.connectionState}, ICE={self.pc.iceConnectionState}")
                     last_stats_time = current_time
                 
                 await asyncio.sleep(0.1)
