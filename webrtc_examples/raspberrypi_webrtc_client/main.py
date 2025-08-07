@@ -31,6 +31,9 @@ def setup_logging(verbose: bool = False):
         logging.getLogger("asyncio").setLevel(logging.WARNING)
         logging.getLogger("websockets").setLevel(logging.WARNING)
         logging.getLogger("aiortc").setLevel(logging.WARNING)
+    
+    # Always enable debug for camera_manager to help with troubleshooting
+    logging.getLogger('camera_manager').setLevel(logging.DEBUG)
 
 
 def parse_arguments():

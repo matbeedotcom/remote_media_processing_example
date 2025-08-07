@@ -50,18 +50,33 @@ class CameraManager:
         logger.info("🔍 Discovering cameras...")
         
         # Try to find OpenCV cameras
+        logger.debug("🔍 Starting OpenCV camera discovery...")
         opencv_cameras = self._discover_opencv_cameras()
+        logger.debug(f"🔍 OpenCV discovery returned {len(opencv_cameras)} camera(s)")
+        
         for cam_info in opencv_cameras:
             self.cameras[camera_index] = cam_info
             cam_info.index = camera_index
+            logger.debug(f"✅ Added OpenCV camera {camera_index}: {cam_info.name}")
             camera_index += 1
         
         # Try to find Raspberry Pi camera
+        logger.debug("🔍 Starting Raspberry Pi camera discovery...")
+        logger.debug(f"🔍 HAS_PICAMERA2 = {HAS_PICAMERA2}")
+        
+        if not HAS_PICAMERA2:
+            logger.debug("❌ Skipping Pi camera discovery - picamera2 not available")
+        else:
+            logger.debug("✅ picamera2 is available, attempting Pi camera discovery...")
+            
         pi_camera = self._discover_pi_camera()
         if pi_camera:
             pi_camera.index = camera_index
             self.cameras[camera_index] = pi_camera
+            logger.debug(f"✅ Added Pi camera {camera_index}: {pi_camera.name}")
             camera_index += 1
+        else:
+            logger.debug("❌ No Raspberry Pi camera found")
         
         logger.info(f"🔍 Discovered {len(self.cameras)} camera(s)")
     
@@ -114,8 +129,10 @@ class CameraManager:
     def _discover_pi_camera(self) -> Optional[CameraInfo]:
         """Discover Raspberry Pi camera."""
         if not HAS_PICAMERA2:
+            logger.debug("❌ _discover_pi_camera: HAS_PICAMERA2 is False")
             return None
         
+        logger.debug("🔍 _discover_pi_camera: Starting picamera2 detection...")
         try:
             picam = Picamera2()
             
@@ -203,7 +220,8 @@ class CameraManager:
                 return camera_info
             
         except Exception as e:
-            logger.debug(f"Raspberry Pi camera not available: {e}")
+            logger.debug(f"❌ _discover_pi_camera: Raspberry Pi camera detection failed: {e}")
+            logger.debug(f"❌ _discover_pi_camera: Exception type: {type(e).__name__}")
             return None
     
     def get_camera_list(self) -> List[CameraInfo]:
