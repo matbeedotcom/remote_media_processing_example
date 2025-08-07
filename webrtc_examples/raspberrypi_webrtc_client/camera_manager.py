@@ -70,28 +70,44 @@ class CameraManager:
         cameras = []
         
         for i in range(8):  # Check first 8 camera indices
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
+            cap = None
+            try:
+                cap = cv2.VideoCapture(i)
+                if not cap.isOpened():
+                    continue
+                
                 # Get camera properties
                 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 
+                # Set a reasonable resolution for testing
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                
                 # Try to read a frame to verify camera works
                 ret, frame = cap.read()
-                if ret and frame is not None:
+                if ret and frame is not None and frame.size > 0:
+                    actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    
                     camera_info = CameraInfo(
                         index=0,  # Will be set later
                         name=f"USB Camera {i}",
                         type='opencv',
-                        width=width if width > 0 else 640,
-                        height=height if height > 0 else 480,
+                        width=actual_width if actual_width > 0 else 640,
+                        height=actual_height if actual_height > 0 else 480,
                         fps=fps if fps > 0 else 30.0,
                         device_path=f"/dev/video{i}"
                     )
                     cameras.append(camera_info)
-                    logger.info(f"📹 Found OpenCV camera {i}: {width}x{height} @ {fps}fps")
-            cap.release()
+                    logger.info(f"📹 Found OpenCV camera {i}: {actual_width}x{actual_height} @ {fps}fps")
+                    
+            except Exception as e:
+                logger.debug(f"Error checking OpenCV camera {i}: {e}")
+            finally:
+                if cap is not None:
+                    cap.release()
         
         return cameras
     
