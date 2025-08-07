@@ -210,12 +210,18 @@ class RaspberryPiWebRTCClient:
                 RTCIceServer(urls=["stun:stun.cloudflare.com:3478"]),  # Additional STUN server
             ]
             
-            config = RTCConfiguration(
-                iceServers=ice_servers,
-                iceTransportPolicy="all",  # Use both STUN and TURN if available
-                bundlePolicy="balanced",   # Better for single video track
-                rtcpMuxPolicy="require"     # Standard for modern WebRTC
-            )
+            # Create RTCConfiguration with compatibility for different aiortc versions
+            try:
+                config = RTCConfiguration(
+                    iceServers=ice_servers,
+                    iceTransportPolicy="all",  # Use both STUN and TURN if available
+                    bundlePolicy="balanced",   # Better for single video track
+                    rtcpMuxPolicy="require"     # Standard for modern WebRTC
+                )
+            except TypeError:
+                # Fallback for older aiortc versions that don't support all parameters
+                logger.debug("🔄 Using fallback RTCConfiguration for older aiortc version")
+                config = RTCConfiguration(iceServers=ice_servers)
             
             logger.debug(f"🌐 Using {len(ice_servers)} STUN servers for ICE negotiation")
             self.pc = RTCPeerConnection(config)
