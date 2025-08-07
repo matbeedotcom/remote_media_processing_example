@@ -310,27 +310,51 @@ class CameraVideoTrack(VideoStreamTrack):
         # Add camera ID and timestamp overlay
         frame = self._add_overlay(frame)
         
-        # Convert to aiortc VideoFrame
+        # Convert to aiortc VideoFrame with proper timing
         try:
+            # Ensure frame is in correct format and contiguous
+            if not frame.flags.c_contiguous:
+                frame = np.ascontiguousarray(frame)
+            
             video_frame = VideoFrame.from_ndarray(frame, format="bgr24")
-            video_frame.pts = self.frame_count
+            
+            # Set proper timing attributes
+            current_time = time.time()
+            if not hasattr(self, '_start_pts_time'):
+                self._start_pts_time = current_time
+            
+            # Calculate PTS based on frame rate and elapsed time
+            elapsed_time = current_time - self._start_pts_time
+            video_frame.pts = int(elapsed_time * self.fps)
             video_frame.time_base = fractions.Fraction(1, self.fps)
             
-            # Log frame sending periodically (less frequently for high resolution)
+            # Log frame sending periodically
             log_interval = 60 if self.width > 1920 else 30
             if self.frame_count % log_interval == 0 or self.frame_count <= 5:
-                logger.info(f"📤 Sending video frame #{self.frame_count} to WebRTC: {frame.shape} {frame.dtype} → PTS={video_frame.pts}")
+                logger.info(f"📤 Sending video frame #{self.frame_count} to WebRTC: {frame.shape} {frame.dtype} → PTS={video_frame.pts}, tb={video_frame.time_base}")
             
             return video_frame
+            
         except Exception as e:
             logger.error(f"Error creating VideoFrame: {e}")
-            # Return a simple black frame
-            black_frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-            video_frame = VideoFrame.from_ndarray(black_frame, format="bgr24")
-            video_frame.pts = self.frame_count
-            video_frame.time_base = fractions.Fraction(1, self.fps)
-            logger.debug(f"📤 Sending fallback black frame #{self.frame_count}")
-            return video_frame
+            # Return a simple black frame with proper timing
+            try:
+                black_frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                video_frame = VideoFrame.from_ndarray(black_frame, format="bgr24")
+                
+                # Set timing for fallback frame
+                current_time = time.time()
+                if not hasattr(self, '_start_pts_time'):
+                    self._start_pts_time = current_time
+                elapsed_time = current_time - self._start_pts_time
+                video_frame.pts = int(elapsed_time * self.fps)
+                video_frame.time_base = fractions.Fraction(1, self.fps)
+                
+                logger.debug(f"📤 Sending fallback black frame #{self.frame_count}")
+                return video_frame
+            except Exception as fallback_error:
+                logger.error(f"Error creating fallback VideoFrame: {fallback_error}")
+                raise e
     
     def _capture_frame(self) -> np.ndarray:
         """Capture a frame from the camera."""

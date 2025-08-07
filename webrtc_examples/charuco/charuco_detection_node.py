@@ -196,26 +196,13 @@ class CharucoDetectionNode(Node):
                         logger.info(f"📋 ChAruco detected! Cam {camera_id}: {aruco_count} ArUco markers → {charuco_corners_count}/{self.expected_corners} corners "
                                    f"({'FULL BOARD' if result.is_full_board else f'{charuco_corners_count/self.expected_corners*100:.1f}%'})")
             
-            # Periodic statistics logging
+            # Reduced individual camera logging - let multi-camera node handle unified status
             processing_time = (time.time() - frame_start_time) * 1000
-            should_log_stats = (self.frame_count % self.log_interval == 0 or 
-                               (self.frame_count <= 5) or 
-                               (aruco_count > 0))
+            should_log_individual = (self.frame_count <= 3)  # Only log first few frames per camera
             
-            if should_log_stats:
+            if should_log_individual:
                 detection_rate = (self.detection_count / self.frame_count) * 100 if self.frame_count > 0 else 0
-                pose_rate = (self.pose_estimation_count / self.frame_count) * 100 if self.frame_count > 0 else 0
-                
-                logger.info(f"📊 ChAruco Stats (Frame #{self.frame_count}):")
-                logger.info(f"   🎯 Detection rate: {detection_rate:.1f}% ({self.detection_count}/{self.frame_count})")
-                logger.info(f"   📐 Pose estimation rate: {pose_rate:.1f}% ({self.pose_estimation_count}/{self.frame_count})")
-                logger.info(f"   ⚡ Processing: {processing_time:.1f}ms")
-                logger.info(f"   🔍 Current: {aruco_count} ArUco → {charuco_corners_count} ChAruco corners")
-                
-                if aruco_count == 0:
-                    logger.info(f"   💡 Tip: Show a ChAruco board to the camera for calibration")
-                elif charuco_corners_count < 10:
-                    logger.info(f"   💡 Tip: Move closer or improve lighting for better corner detection")
+                logger.info(f"📊 ChAruco Camera {camera_id} ready - Detection: {detection_rate:.1f}%, Processing: {processing_time:.1f}ms")
             
             return result
             

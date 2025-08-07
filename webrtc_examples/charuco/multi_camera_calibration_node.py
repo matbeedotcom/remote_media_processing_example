@@ -279,12 +279,12 @@ class MultiCameraCalibrationNode(Node):
             # Detect ChAruco in all frames
             poses = await self.detect_charuco_parallel(frames, timestamp)
             
-            # Count successful detections
+            # Count successful detections and analyze per camera
             valid_poses = sum(1 for p in poses if p.rvec is not None and hasattr(p.rvec, 'size') and p.rvec.size > 0)
             if valid_poses > 0:
                 self.successful_detections += 1
             
-            # Update pose diversity selection
+            # Update pose diversity selection first
             diversity_result = await self.diversity_selector.process({
                 'frame_data': {'images': frames},
                 'poses': poses,
@@ -300,6 +300,63 @@ class MultiCameraCalibrationNode(Node):
                     'num_frames': 0,
                     'diversity_scores': []
                 }
+            
+            # Unified camera status reporting every 30 frames (~1 second)
+            if self.frames_processed % 30 == 0:
+                logger.info(f"")  # Empty line for readability
+                logger.info(f"🎬 === MULTI-CAMERA STATUS - Frame #{self.frames_processed} ===")
+                
+                camera_status = []
+                total_aruco = 0
+                total_charuco = 0
+                cameras_with_charuco = 0
+                
+                for i, pose in enumerate(poses):
+                    has_aruco = pose.aruco_ids is not None and len(pose.aruco_ids) > 0
+                    has_charuco = pose.charuco_corners is not None and len(pose.charuco_corners) > 0
+                    aruco_count = len(pose.aruco_ids) if has_aruco else 0
+                    charuco_count = len(pose.charuco_corners) if has_charuco else 0
+                    
+                    total_aruco += aruco_count
+                    total_charuco += charuco_count
+                    if has_charuco:
+                        cameras_with_charuco += 1
+                    
+                    # Individual camera status
+                    if has_charuco:
+                        status = f"✅ {aruco_count}ArUco→{charuco_count}ChAruco"
+                        if pose.is_full_board:
+                            status += " (FULL BOARD!)"
+                        else:
+                            percentage = (charuco_count / 416) * 100  # 416 = 26x16 expected corners
+                            status += f" ({percentage:.1f}%)"
+                    elif has_aruco:
+                        status = f"🟡 {aruco_count}ArUco (no ChAruco)"
+                    else:
+                        status = f"❌ No markers"
+                    
+                    logger.info(f"   📷 Camera {i}: {status}")
+                
+                # Summary statistics
+                detection_rate = (self.successful_detections/self.frames_processed)*100
+                logger.info(f"")
+                logger.info(f"📊 SUMMARY: {cameras_with_charuco}/{len(frames)} cameras with ChAruco")
+                logger.info(f"   🎯 Total: {total_aruco} ArUco → {total_charuco} ChAruco corners")
+                logger.info(f"   📈 Detection rate: {detection_rate:.1f}% ({self.successful_detections}/{self.frames_processed})")
+                frames_collected = diversity_result.get("num_frames", 0)
+                calibration_status = "✅ COMPLETE" if self.calibration_performed else f"⏳ Need {frames_collected}/5 diverse poses"
+                logger.info(f"   🎯 Calibration: {calibration_status}")
+                
+                if total_aruco == 0:
+                    logger.info(f"   💡 TIP: Show ChAruco board to cameras for calibration")
+                elif total_charuco < 50:
+                    logger.info(f"   💡 TIP: Improve lighting or move board closer for better detection")
+                elif cameras_with_charuco > 0:
+                    logger.info(f"   🎉 GREAT: ChAruco detection active on {cameras_with_charuco} cameras!")
+                
+                logger.info(f"========================================================")
+                logger.info(f"")
+            
             
             # Perform calibration if needed
             if (self.config.auto_calibrate and 

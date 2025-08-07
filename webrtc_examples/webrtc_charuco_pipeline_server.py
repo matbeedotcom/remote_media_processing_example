@@ -72,6 +72,7 @@ from charuco_detection_node import CharucoDetectionNode, CharucoConfig
 from pose_diversity_selector_node import PoseDiversitySelectorNode
 from perspective_warp_node import PerspectiveWarpNode, WarpConfig
 from multi_camera_calibration_node import MultiCameraCalibrationNode, MultiCameraConfig
+from video_quad_splitter_node import VideoQuadSplitterNode, VideoQuadMergerNode
 
 # Configure logging
 logging.basicConfig(
@@ -80,10 +81,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Reduce noise from some loggers
+# Reduce noise from most loggers - only keep charuco_detection_node at INFO level
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 logging.getLogger("aiortc").setLevel(logging.WARNING)
 logging.getLogger("remotemedia.core.pipeline").setLevel(logging.WARNING)
+
+# Set all other nodes to WARNING level except charuco_detection_node and multi_camera_calibration_node
+logging.getLogger("video_stream_analyzer").setLevel(logging.WARNING)
+logging.getLogger("video_quad_splitter_node").setLevel(logging.WARNING) 
+logging.getLogger("pose_diversity_selector_node").setLevel(logging.WARNING)
+logging.getLogger("perspective_warp_node").setLevel(logging.WARNING)
+logging.getLogger(__name__).setLevel(logging.WARNING)  # Main server logs
+logging.getLogger("Pipeline").setLevel(logging.WARNING)
+
+# Keep these at INFO level for camera detection monitoring
+# logging.getLogger("charuco_detection_node").setLevel(logging.INFO)  # Already INFO by default
+# logging.getLogger("multi_camera_calibration_node").setLevel(logging.INFO)  # Already INFO by default
 
 
 class VideoFrameBuffer(Node):
@@ -105,26 +118,51 @@ class VideoFrameBuffer(Node):
     async def process(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Buffer frames and output when all cameras have frames for a timestamp."""
         try:
-            frame = data.get('frame')
-            camera_id = data.get('camera_id', 0)
-            timestamp = data.get('timestamp', self.frame_counter)
+            # Check if we received an array of frames (from VideoQuadSplitterNode)
+            frames_array = data.get('frames')
+            if frames_array is not None and isinstance(frames_array, list):
+                # Handle array of frames from splitter
+                timestamp = data.get('timestamp', self.frame_counter)
+                self.frame_counter += 1
+                
+                # Debug logging for first few frames
+                if self.frame_counter <= 5 or self.frame_counter % 60 == 0:
+                    logger.info(f"📥 FrameBuffer received {len(frames_array)} frames from splitter "
+                               f"(frame #{self.frame_counter})")
+                
+                # Add all frames to buffer with appropriate camera IDs
+                if timestamp not in self.frame_buffer:
+                    self.frame_buffer[timestamp] = {}
+                
+                for i, frame in enumerate(frames_array[:self.num_cameras]):
+                    self.frame_buffer[timestamp][i] = frame
+                
+                # Log if we received more/fewer frames than expected
+                if len(frames_array) != self.num_cameras:
+                    logger.warning(f"⚠️ Expected {self.num_cameras} frames, got {len(frames_array)}")
             
-            self.frame_counter += 1
-            
-            # Debug logging for first few frames
-            if self.frame_counter <= 5 or self.frame_counter % 60 == 0:
-                logger.info(f"📥 FrameBuffer received frame #{self.frame_counter}: camera_id={camera_id}, "
-                           f"timestamp={timestamp}, frame_shape={frame.shape if frame is not None else None}")
-            
-            if frame is None:
-                logger.warning("⚠️  FrameBuffer received None frame")
-                return None
-            
-            # Add frame to buffer
-            if timestamp not in self.frame_buffer:
-                self.frame_buffer[timestamp] = {}
-            
-            self.frame_buffer[timestamp][camera_id] = frame
+            else:
+                # Handle single frame (original behavior)
+                frame = data.get('frame')
+                camera_id = data.get('camera_id', 0)
+                timestamp = data.get('timestamp', self.frame_counter)
+                
+                self.frame_counter += 1
+                
+                # Debug logging for first few frames
+                if self.frame_counter <= 5 or self.frame_counter % 60 == 0:
+                    logger.info(f"📥 FrameBuffer received frame #{self.frame_counter}: camera_id={camera_id}, "
+                               f"timestamp={timestamp}, frame_shape={frame.shape if frame is not None else None}")
+                
+                if frame is None:
+                    logger.warning("⚠️  FrameBuffer received None frame")
+                    return None
+                
+                # Add frame to buffer
+                if timestamp not in self.frame_buffer:
+                    self.frame_buffer[timestamp] = {}
+                
+                self.frame_buffer[timestamp][camera_id] = frame
             
             # Check if we have frames from all cameras for this timestamp
             # OR if we only have 1 camera, pass frames through immediately
@@ -276,23 +314,34 @@ def create_charuco_pipeline(
     num_cameras: int = 1,
     calibration_file: str = "charuco_calibration.json",
     output_width: int = 1920,
-    output_height: int = 1080
+    output_height: int = 1080,
+    use_quad_splitter: bool = False
 ) -> Pipeline:
     """
     Create a ChAruco calibration and perspective warping pipeline.
     
     Pipeline flow:
-    1. VideoFrameBuffer - Synchronizes frames from multiple cameras
-    2. MultiCameraCalibrationNode - Handles ChAruco detection, calibration, and warping
-    3. VideoOutputFormatter - Formats output for WebRTC streaming
+    1. VideoQuadSplitterNode (optional) - Splits quad layout into separate frames
+    2. VideoFrameBuffer - Synchronizes frames from multiple cameras
+    3. MultiCameraCalibrationNode - Handles ChAruco detection, calibration, and warping
+    4. VideoOutputFormatter - Formats output for WebRTC streaming
     """
     pipeline = Pipeline()
     # Video stream analyzer for detailed frame logging
-    analyzer = VideoStreamAnalyzer(name="FrameAnalyzer", log_interval=30)  # Log every 30 frames
-    pipeline.add_node(analyzer)
+    # analyzer = VideoStreamAnalyzer(name="FrameAnalyzer", log_interval=30)  # Log every 30 frames
+    # pipeline.add_node(analyzer)
+    
+    # Optional quad splitter for composite input frames
+    if use_quad_splitter:
+        quad_splitter = VideoQuadSplitterNode(name="QuadSplitter", num_splits=4)
+        pipeline.add_node(quad_splitter)
+        # When using quad splitter, we expect 4 cameras from the split
+        actual_num_cameras = 4
+    else:
+        actual_num_cameras = num_cameras
     
     # Video frame synchronization
-    frame_buffer = VideoFrameBuffer(num_cameras=num_cameras, name="FrameBuffer")
+    frame_buffer = VideoFrameBuffer(num_cameras=actual_num_cameras, name="FrameBuffer")
     pipeline.add_node(frame_buffer)
     
     # ChAruco calibration configuration
@@ -313,7 +362,7 @@ def create_charuco_pipeline(
     )
     
     multi_camera_config = MultiCameraConfig(
-        num_cameras=num_cameras,
+        num_cameras=actual_num_cameras,
         charuco_config=charuco_config,
         warp_config=warp_config,
         max_calibration_frames=10,
@@ -367,7 +416,8 @@ async def create_charuco_webrtc_server(
     num_cameras: int = 1,
     calibration_file: str = "charuco_calibration.json",
     output_width: int = 1920,
-    output_height: int = 1080
+    output_height: int = 1080,
+    use_quad_splitter: bool = False
 ) -> WebRTCServer:
     """Create and configure the ChAruco WebRTC server."""
     
@@ -387,7 +437,8 @@ async def create_charuco_webrtc_server(
             num_cameras=num_cameras,
             calibration_file=calibration_file,
             output_width=output_width,
-            output_height=output_height
+            output_height=output_height,
+            use_quad_splitter=use_quad_splitter
         )
     
     # Create server with ChAruco handler
@@ -459,6 +510,13 @@ Examples:
         help="Warped output height in pixels (default: 1080, env: OUTPUT_HEIGHT)"
     )
     
+    parser.add_argument(
+        "--use-quad-splitter", "-q",
+        action="store_true",
+        default=os.environ.get("USE_QUAD_SPLITTER", "false").lower() == "true",
+        help="Enable quad splitter for composite input frames (default: false, env: USE_QUAD_SPLITTER)"
+    )
+    
     return parser.parse_args()
 
 
@@ -475,12 +533,18 @@ async def main():
     CALIBRATION_FILE = args.calibration_file
     OUTPUT_WIDTH = args.output_width
     OUTPUT_HEIGHT = args.output_height
+    USE_QUAD_SPLITTER = args.use_quad_splitter
+    
+    # Temporarily set main logger to INFO for startup messages
+    main_logger = logging.getLogger(__name__)
+    main_logger.setLevel(logging.INFO)
     
     logger.info("=== ChAruco WebRTC Calibration Server ===")
     logger.info(f"Server: {SERVER_HOST}:{SERVER_PORT}")
     logger.info(f"Expected Cameras: {NUM_CAMERAS}")
     logger.info(f"Calibration File: {CALIBRATION_FILE}")
     logger.info(f"Output Resolution: {OUTPUT_WIDTH}x{OUTPUT_HEIGHT}")
+    logger.info(f"Quad Splitter: {'Enabled' if USE_QUAD_SPLITTER else 'Disabled'}")
     logger.info("")
     logger.info("ChAruco Board Configuration:")
     logger.info("  • Size: 27×17 squares")
@@ -497,7 +561,8 @@ async def main():
         num_cameras=NUM_CAMERAS,
         calibration_file=CALIBRATION_FILE,
         output_width=OUTPUT_WIDTH,
-        output_height=OUTPUT_HEIGHT
+        output_height=OUTPUT_HEIGHT,
+        use_quad_splitter=USE_QUAD_SPLITTER
     )
     
     try:
@@ -533,21 +598,29 @@ async def main():
         logger.info("")
         logger.info("Press Ctrl+C to stop the server")
         
+        # Now set main logger back to WARNING to reduce noise during operation
+        main_logger.setLevel(logging.WARNING)
+        
         # Keep server running
         while True:
             await asyncio.sleep(10)
             
-            # Log active connections
+            # Log active connections (temporarily re-enable INFO level)
             connections_count = len(server.connections)
             if connections_count > 0:
+                main_logger.setLevel(logging.INFO)
                 logger.info(f"📊 Active connections: {connections_count}")
+                main_logger.setLevel(logging.WARNING)
         
     except KeyboardInterrupt:
+        main_logger.setLevel(logging.INFO)
         logger.info("🛑 Shutting down ChAruco WebRTC server...")
     except Exception as e:
+        main_logger.setLevel(logging.INFO)
         logger.error(f"❌ Server error: {e}", exc_info=True)
     finally:
         await server.stop()
+        main_logger.setLevel(logging.INFO)
         logger.info("✅ Server stopped")
 
 
