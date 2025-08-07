@@ -56,7 +56,17 @@ class PoseDiversitySelectorNode(Node):
         # Storage for selected calibration frames
         self.selected_frames: List[CalibrationFrame] = []
         
-        logger.info(f"Initialized pose diversity selector with max_frames={max_frames}")
+        # Statistics tracking
+        self.frame_count = 0
+        self.candidate_count = 0
+        self.selection_updates = 0
+        self.last_log_time = 0
+        
+        logger.info(f"🎯 Initialized pose diversity selector:")
+        logger.info(f"   📊 Max frames: {max_frames}")
+        logger.info(f"   🔄 Rotation weight: {rotation_weight}")
+        logger.info(f"   📐 Translation weight: {translation_weight}")
+        logger.info(f"   ✅ Require full board: {require_full_board}")
     
     def compute_pose_distance(self, pose1: PoseResult, pose2: PoseResult) -> float:
         """
@@ -153,19 +163,25 @@ class PoseDiversitySelectorNode(Node):
         if not self.should_add_frame(candidate):
             return False
         
+        self.selection_updates += 1
+        
         if len(self.selected_frames) < self.max_frames:
             # Add new frame
             self.selected_frames.append(candidate)
-            logger.info(f"Added calibration frame {len(self.selected_frames)}/{self.max_frames} "
-                       f"with diversity score {candidate.diversity_score:.3f}")
+            logger.info(f"✅ ADDED calibration frame {len(self.selected_frames)}/{self.max_frames}! "
+                       f"Diversity score: {candidate.diversity_score:.3f}")
+            
+            # Show progress bar
+            progress = "█" * len(self.selected_frames) + "░" * (self.max_frames - len(self.selected_frames))
+            logger.info(f"📊 Collection progress: [{progress}] {len(self.selected_frames)}/{self.max_frames}")
+            
         else:
             # Replace least diverse frame
             min_idx = min(range(len(self.selected_frames)),
                          key=lambda i: self.selected_frames[i].diversity_score)
             old_score = self.selected_frames[min_idx].diversity_score
             self.selected_frames[min_idx] = candidate
-            logger.info(f"Replaced calibration frame with diversity score "
-                       f"{old_score:.3f} -> {candidate.diversity_score:.3f}")
+            logger.info(f"🔄 REPLACED calibration frame! Diversity: {old_score:.3f} → {candidate.diversity_score:.3f}")
         
         # Recompute all diversity scores after update
         for frame in self.selected_frames:
@@ -176,10 +192,22 @@ class PoseDiversitySelectorNode(Node):
     
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Process new frame data and update selection if diverse enough."""
+        import time
+        
+        self.frame_count += 1
+        current_time = time.time()
+        
         try:
             frame_data = data.get('frame_data', {})
             poses = data.get('poses', [])
             timestamp = data.get('timestamp')
+            
+            # Count valid poses
+            valid_poses = sum(1 for pose in poses 
+                            if pose.rvec is not None and pose.tvec is not None and
+                            hasattr(pose.rvec, 'size') and pose.rvec.size > 0)
+            
+            full_board_poses = sum(1 for pose in poses if pose.is_full_board)
             
             # Create calibration frame
             candidate = CalibrationFrame(
@@ -188,26 +216,62 @@ class PoseDiversitySelectorNode(Node):
                 timestamp=timestamp
             )
             
-            # Update selection
-            is_updated = self.update_selection(candidate)
-            
-            # Log current selection status
-            if is_updated:
-                valid_count = sum(1 for f in self.selected_frames 
-                                 for p in f.poses if p.rvec is not None and 
-                                 hasattr(p.rvec, 'size') and p.rvec.size > 0)
-                logger.info(f"Selection updated: {len(self.selected_frames)} frames, "
-                           f"{valid_count} valid poses")
+            # Only consider as candidate if we have valid poses
+            if valid_poses > 0:
+                self.candidate_count += 1
+                
+                # Log candidate evaluation
+                if valid_poses > 0:
+                    logger.info(f"🎯 Evaluating candidate frame: {valid_poses} valid poses, {full_board_poses} full boards")
+                
+                # Update selection
+                is_updated = self.update_selection(candidate)
+                
+                # Periodic statistics
+                if is_updated or (current_time - self.last_log_time) > 10.0:  # Log every 10 seconds or on update
+                    self.last_log_time = current_time
+                    
+                    acceptance_rate = (self.selection_updates / self.candidate_count) * 100 if self.candidate_count > 0 else 0
+                    
+                    logger.info(f"📈 Pose Diversity Selector Stats:")
+                    logger.info(f"   🖼️  Total frames processed: {self.frame_count}")
+                    logger.info(f"   🎯 Valid candidates: {self.candidate_count}")
+                    logger.info(f"   ✅ Selection updates: {self.selection_updates}")
+                    logger.info(f"   📊 Acceptance rate: {acceptance_rate:.1f}%")
+                    logger.info(f"   💾 Selected frames: {len(self.selected_frames)}/{self.max_frames}")
+                    
+                    if self.selected_frames:
+                        scores = [f.diversity_score for f in self.selected_frames]
+                        min_score = min(scores)
+                        max_score = max(scores)
+                        avg_score = sum(scores) / len(scores)
+                        logger.info(f"   🎲 Diversity scores: min={min_score:.3f}, max={max_score:.3f}, avg={avg_score:.3f}")
+                    
+                    if len(self.selected_frames) >= self.max_frames:
+                        logger.info(f"🎉 CALIBRATION READY! Collected {self.max_frames} diverse poses for calibration!")
+                    else:
+                        remaining = self.max_frames - len(self.selected_frames)
+                        logger.info(f"🔄 Need {remaining} more diverse poses for calibration")
+                        logger.info(f"💡 Tip: Move ChAruco board to different positions/angles")
+                
+            else:
+                is_updated = False
+                # Periodic reminder if no valid poses
+                if self.frame_count % 60 == 0:  # Every 60 frames (~2 seconds)
+                    logger.info(f"⏳ Waiting for valid ChAruco poses... (processed {self.frame_count} frames)")
             
             return {
                 'selected_frames': self.selected_frames.copy(),
                 'is_updated': is_updated,
                 'num_frames': len(self.selected_frames),
-                'diversity_scores': [f.diversity_score for f in self.selected_frames]
+                'diversity_scores': [f.diversity_score for f in self.selected_frames],
+                'valid_poses': valid_poses,
+                'full_board_poses': full_board_poses,
+                'acceptance_rate': (self.selection_updates / max(self.candidate_count, 1)) * 100
             }
             
         except Exception as e:
-            logger.error(f"Error in pose diversity selection: {e}")
+            logger.error(f"❌ Error in pose diversity selection (frame #{self.frame_count}): {e}")
             return {
                 'selected_frames': self.selected_frames.copy(),
                 'is_updated': False,

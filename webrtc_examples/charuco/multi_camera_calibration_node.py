@@ -265,10 +265,16 @@ class MultiCameraCalibrationNode(Node):
             force_calibration = data.get('force_calibration', False)
             
             if not frames:
-                logger.warning("No frames provided")
+                logger.warning("⚠️  No frames provided to multi-camera calibration")
                 return {'error': 'No frames provided'}
             
             self.frames_processed += 1
+            
+            # Log periodic status
+            if self.frames_processed % 60 == 0:  # Every 60 frames (~2 seconds)
+                logger.info(f"🎬 Multi-camera processing: frame #{self.frames_processed}, {len(frames)} cameras")
+                logger.info(f"   📊 Detection rate: {(self.successful_detections/self.frames_processed)*100:.1f}%")
+                logger.info(f"   🎯 Calibration status: {'✅ DONE' if self.calibration_performed else '⏳ COLLECTING'}")
             
             # Detect ChAruco in all frames
             poses = await self.detect_charuco_parallel(frames, timestamp)

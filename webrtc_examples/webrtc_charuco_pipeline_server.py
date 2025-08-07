@@ -97,6 +97,9 @@ class VideoFrameBuffer(Node):
         self.frame_buffer: Dict[float, Dict[int, np.ndarray]] = {}
         self.max_buffer_size = 10  # Keep only recent frames
         self.frame_counter = 0
+        self.processed_frames = 0
+        
+        logger.info(f"📹 FrameBuffer initialized for {num_cameras} cameras")
         
     async def process(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Buffer frames and output when all cameras have frames for a timestamp."""
@@ -105,7 +108,15 @@ class VideoFrameBuffer(Node):
             camera_id = data.get('camera_id', 0)
             timestamp = data.get('timestamp', self.frame_counter)
             
+            self.frame_counter += 1
+            
+            # Debug logging for first few frames
+            if self.frame_counter <= 5 or self.frame_counter % 60 == 0:
+                logger.info(f"📥 FrameBuffer received frame #{self.frame_counter}: camera_id={camera_id}, "
+                           f"timestamp={timestamp}, frame_shape={frame.shape if frame is not None else None}")
+            
             if frame is None:
+                logger.warning("⚠️  FrameBuffer received None frame")
                 return None
             
             # Add frame to buffer
@@ -115,7 +126,13 @@ class VideoFrameBuffer(Node):
             self.frame_buffer[timestamp][camera_id] = frame
             
             # Check if we have frames from all cameras for this timestamp
-            if len(self.frame_buffer[timestamp]) >= self.num_cameras:
+            # OR if we only have 1 camera, pass frames through immediately
+            buffer_ready = (len(self.frame_buffer[timestamp]) >= self.num_cameras or 
+                           (self.num_cameras == 1 and len(self.frame_buffer[timestamp]) >= 1))
+            
+            if buffer_ready:
+                self.processed_frames += 1
+                
                 # Extract synchronized frame set
                 frames = []
                 for cam_id in range(self.num_cameras):
@@ -128,6 +145,12 @@ class VideoFrameBuffer(Node):
                             h, w = frames[0].shape[:2]
                         blank_frame = np.zeros((h, w, 3), dtype=np.uint8)
                         frames.append(blank_frame)
+                
+                # Log successful frame passing
+                if self.processed_frames <= 5 or self.processed_frames % 60 == 0:
+                    available_cameras = len(self.frame_buffer[timestamp])
+                    logger.info(f"✅ FrameBuffer passing {len(frames)} frames to ChAruco pipeline "
+                               f"(frame #{self.processed_frames}, {available_cameras}/{self.num_cameras} cameras available)")
                 
                 # Clean up old frames
                 self._cleanup_buffer()
@@ -249,7 +272,7 @@ class VideoOutputFormatter(Node):
 
 
 def create_charuco_pipeline(
-    num_cameras: int = 4,
+    num_cameras: int = 1,
     calibration_file: str = "charuco_calibration.json",
     output_width: int = 1920,
     output_height: int = 1080
@@ -337,7 +360,7 @@ class CharucoWebRTCHandler:
 async def create_charuco_webrtc_server(
     host: str = "0.0.0.0",
     port: int = 8081,
-    num_cameras: int = 4,
+    num_cameras: int = 1,
     calibration_file: str = "charuco_calibration.json",
     output_width: int = 1920,
     output_height: int = 1080
@@ -407,8 +430,8 @@ Examples:
     parser.add_argument(
         "--cameras", "-c",
         type=int,
-        default=int(os.environ.get("NUM_CAMERAS", "4")),
-        help="Number of expected cameras (default: 4, env: NUM_CAMERAS)"
+        default=int(os.environ.get("NUM_CAMERAS", "1")),
+        help="Number of expected cameras (default: 1, env: NUM_CAMERAS)"
     )
     
     parser.add_argument(
