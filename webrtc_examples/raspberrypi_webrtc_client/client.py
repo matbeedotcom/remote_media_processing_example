@@ -12,7 +12,7 @@ import signal
 import time
 from typing import List, Optional, Dict, Any
 import websockets
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 
 from camera_manager import CameraManager
 from video_track import CameraVideoTrack
@@ -152,13 +152,14 @@ class RaspberryPiWebRTCClient:
         try:
             logger.info(f"🔌 Connecting to {self.server_url}")
             
-            # Create peer connection
-            self.pc = RTCPeerConnection({
-                "iceServers": [
-                    {"urls": "stun:stun.l.google.com:19302"},
-                    {"urls": "stun:stun1.l.google.com:19302"}
+            # Create peer connection with proper RTCConfiguration
+            config = RTCConfiguration(
+                iceServers=[
+                    RTCIceServer(urls="stun:stun.l.google.com:19302"),
+                    RTCIceServer(urls="stun:stun1.l.google.com:19302")
                 ]
-            })
+            )
+            self.pc = RTCPeerConnection(config)
             
             # Setup event handlers
             @self.pc.on("connectionstatechange")

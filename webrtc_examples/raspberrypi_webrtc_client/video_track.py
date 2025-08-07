@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 if HAS_PICAMERA2:
     from picamera2 import Picamera2
 
+# Global camera instance management for picamera2
+_picamera_instances = {}
+_picamera_lock = {}
+
 
 class CameraVideoTrack(VideoStreamTrack):
     """Custom video track for camera streaming."""
@@ -85,7 +89,25 @@ class CameraVideoTrack(VideoStreamTrack):
                 logger.info(f"📹 OpenCV camera {self.camera_info.index}: {actual_width}x{actual_height} @ {actual_fps}fps")
                 
             elif self.camera_info.type == 'picamera2' and HAS_PICAMERA2:
-                self.camera = Picamera2()
+                # Use singleton pattern for picamera2 to prevent resource conflicts
+                camera_key = f"pi_camera_{self.camera_info.index}"
+                
+                if camera_key not in _picamera_instances:
+                    logger.debug(f"🔍 Creating new Picamera2 instance for {camera_key}")
+                    _picamera_instances[camera_key] = Picamera2()
+                    _picamera_lock[camera_key] = False
+                else:
+                    logger.debug(f"🔍 Reusing existing Picamera2 instance for {camera_key}")
+                
+                self.camera = _picamera_instances[camera_key]
+                
+                # Check if camera is already configured and running
+                if _picamera_lock[camera_key]:
+                    logger.debug(f"📷 Camera {camera_key} already configured and running")
+                    return
+                
+                # Mark as being configured
+                _picamera_lock[camera_key] = True
                 
                 # Create configuration with error handling for sensor modes
                 try:
@@ -311,8 +333,15 @@ class CameraVideoTrack(VideoStreamTrack):
                 if self.camera_info.type == 'opencv':
                     self.camera.release()
                 elif self.camera_info.type == 'picamera2' and HAS_PICAMERA2:
-                    self.camera.stop()
-                    self.camera.close()
+                    camera_key = f"pi_camera_{self.camera_info.index}"
+                    
+                    # Only stop if we're the ones who started it
+                    if camera_key in _picamera_lock and _picamera_lock[camera_key]:
+                        logger.debug(f"🛑 Stopping picamera2 instance {camera_key}")
+                        self.camera.stop()
+                        _picamera_lock[camera_key] = False
+                    else:
+                        logger.debug(f"🛑 Not stopping picamera2 instance {camera_key} - not our responsibility")
                 
                 logger.info(f"🛑 Stopped camera {self.camera_id} ({self.camera_info.name})")
                 
