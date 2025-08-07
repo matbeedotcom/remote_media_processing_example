@@ -118,26 +118,89 @@ class CameraManager:
         
         try:
             picam = Picamera2()
-            camera_config = picam.create_video_configuration()
             
-            # Get default resolution
-            main_config = camera_config.get('main', {})
-            size = main_config.get('size', [640, 480])
-            width, height = size[0], size[1]
+            # Get sensor modes to identify camera type and capabilities
+            sensor_modes = picam.sensor_modes
+            camera_name = "Raspberry Pi Camera"
+            default_width, default_height = 640, 480
             
-            camera_info = CameraInfo(
-                index=0,  # Will be set later
-                name="Raspberry Pi Camera",
-                type='picamera2',
-                width=width,
-                height=height,
-                fps=30.0,
-                device_path="/dev/video0"  # Typical Pi camera path
-            )
+            if sensor_modes:
+                # Log available sensor modes for debugging
+                logger.debug(f"Available sensor modes: {len(sensor_modes)}")
+                for i, mode in enumerate(sensor_modes):
+                    logger.debug(f"  Mode {i}: {mode}")
+                
+                # Try to identify specific camera types
+                first_mode = sensor_modes[0]
+                mode_size = first_mode.get('size', (640, 480))
+                
+                # Check for Arducam PiVariety camera patterns
+                if any(mode.get('size') == (2560, 400) for mode in sensor_modes):
+                    camera_name = "Arducam PiVariety Camera"
+                    # Use a reasonable default resolution for streaming
+                    default_width, default_height = 640, 480
+                    logger.info("🎭 Detected Arducam PiVariety camera")
+                elif any(mode.get('size', (0,0))[0] >= 5000 for mode in sensor_modes):
+                    camera_name = "High Resolution Pi Camera"
+                    default_width, default_height = 1280, 720
+                else:
+                    # Use the first available mode as default
+                    default_width, default_height = mode_size[0], mode_size[1]
+                    # But limit to reasonable streaming resolution
+                    if default_width > 1920:
+                        default_width, default_height = 1280, 720
+                    elif default_width > 1280:
+                        default_width, default_height = 1280, 720
+                    elif default_width < 640:
+                        default_width, default_height = 640, 480
             
-            logger.info(f"📷 Found Raspberry Pi camera: {width}x{height}")
-            picam.close()
-            return camera_info
+            # Test camera configuration with a suitable resolution
+            try:
+                test_config = picam.create_video_configuration(
+                    main={"size": (default_width, default_height), "format": "RGB888"}
+                )
+                picam.configure(test_config)
+                
+                # Test that we can start and get the actual configuration
+                picam.start()
+                actual_config = picam.camera_configuration()
+                picam.stop()
+                
+                # Get actual resolution from the configuration
+                main_stream = actual_config.get('main', {})
+                actual_size = main_stream.get('size', (default_width, default_height))
+                actual_width, actual_height = actual_size
+                
+                camera_info = CameraInfo(
+                    index=0,  # Will be set later
+                    name=camera_name,
+                    type='picamera2',
+                    width=actual_width,
+                    height=actual_height,
+                    fps=30.0,
+                    device_path="/dev/video0"
+                )
+                
+                logger.info(f"📷 Found {camera_name}: {actual_width}x{actual_height}")
+                picam.close()
+                return camera_info
+                
+            except Exception as config_error:
+                logger.debug(f"Error testing camera configuration: {config_error}")
+                # Fall back to basic info without testing
+                camera_info = CameraInfo(
+                    index=0,
+                    name=camera_name,
+                    type='picamera2',
+                    width=default_width,
+                    height=default_height,
+                    fps=30.0,
+                    device_path="/dev/video0"
+                )
+                
+                logger.info(f"📷 Found {camera_name}: {default_width}x{default_height} (untested)")
+                picam.close()
+                return camera_info
             
         except Exception as e:
             logger.debug(f"Raspberry Pi camera not available: {e}")

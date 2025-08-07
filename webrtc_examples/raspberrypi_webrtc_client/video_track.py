@@ -86,13 +86,51 @@ class CameraVideoTrack(VideoStreamTrack):
                 
             elif self.camera_info.type == 'picamera2' and HAS_PICAMERA2:
                 self.camera = Picamera2()
-                config = self.camera.create_video_configuration(
-                    main={"size": (self.width, self.height), "format": "RGB888"}
-                )
-                self.camera.configure(config)
-                self.camera.start()
                 
-                logger.info(f"📷 Raspberry Pi camera: {self.width}x{self.height} @ {self.fps}fps")
+                # Create configuration with error handling for sensor modes
+                try:
+                    config = self.camera.create_video_configuration(
+                        main={"size": (self.width, self.height), "format": "RGB888"}
+                    )
+                    self.camera.configure(config)
+                    
+                    # Get actual configuration to verify settings
+                    actual_config = self.camera.camera_configuration()
+                    main_stream = actual_config.get('main', {})
+                    actual_size = main_stream.get('size', (self.width, self.height))
+                    
+                    # Update dimensions if they were adjusted by the camera
+                    if actual_size != (self.width, self.height):
+                        logger.info(f"📷 Camera adjusted resolution from {self.width}x{self.height} to {actual_size[0]}x{actual_size[1]}")
+                        self.width, self.height = actual_size
+                    
+                    self.camera.start()
+                    
+                    # Test capture to ensure camera is working
+                    test_frame = self.camera.capture_array()
+                    if test_frame is None:
+                        raise RuntimeError("Test capture failed")
+                    
+                    logger.info(f"📷 Raspberry Pi camera: {self.width}x{self.height} @ {self.fps}fps")
+                    
+                except Exception as config_error:
+                    logger.error(f"Failed to configure picamera2: {config_error}")
+                    # Try with a more basic configuration
+                    try:
+                        config = self.camera.create_video_configuration()
+                        self.camera.configure(config)
+                        self.camera.start()
+                        
+                        # Update dimensions from actual config
+                        actual_config = self.camera.camera_configuration()
+                        main_stream = actual_config.get('main', {})
+                        actual_size = main_stream.get('size', (640, 480))
+                        self.width, self.height = actual_size
+                        
+                        logger.info(f"📷 Raspberry Pi camera (fallback config): {self.width}x{self.height}")
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback configuration also failed: {fallback_error}")
+                        raise RuntimeError(f"Could not configure picamera2: {config_error}")
                 
             logger.info(f"✅ Initialized {self.camera_info.name}")
             
