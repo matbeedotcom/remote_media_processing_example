@@ -75,6 +75,7 @@ from sensor_config import SensorDatabase
 
 # Import video processing nodes
 from video_quad_splitter_node import VideoQuadSplitterNode
+from frame_debug_node import FrameDebugNode
 
 # Configure logging
 logging.basicConfig(
@@ -395,6 +396,11 @@ def create_enhanced_vlbi_pipeline(
     elif use_quad_splitter:
         quad_splitter = VideoQuadSplitterNode(name="QuadSplitter", num_splits=4)
         pipeline.add_node(quad_splitter)
+        
+        # Add debug node right after quad splitter to see what frames we're getting
+        debug_node = FrameDebugNode(name="FrameDebugAfterSplitter", save_frames=True, save_interval=10, max_saves=10)
+        pipeline.add_node(debug_node)
+        
         actual_num_cameras = 4
     else:
         actual_num_cameras = num_cameras

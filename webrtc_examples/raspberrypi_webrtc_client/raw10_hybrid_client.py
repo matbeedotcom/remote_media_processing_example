@@ -35,7 +35,7 @@ class ProcessedVideoTrack(VideoStreamTrack):
     This provides video for the pipeline while RAW data goes through data channels.
     """
     
-    def __init__(self, raw_track: RAW10DataChannelTrack, width=640, height=480):
+    def __init__(self, raw_track: RAW10DataChannelTrack, width=1280, height=200):
         super().__init__()
         self.raw_track = raw_track
         self.width = width
@@ -71,9 +71,9 @@ class ProcessedVideoTrack(VideoStreamTrack):
                     else:
                         frame = raw_array
                     
-                    # Resize if needed
+                    # Resize with aspect ratio preservation
                     if frame.shape[:2] != (self.height, self.width):
-                        frame = cv2.resize(frame, (self.width, self.height))
+                        frame = self._resize_preserve_aspect_ratio(frame, self.width, self.height)
                     
                     # Put frame back for data channel processing
                     try:
@@ -101,6 +101,50 @@ class ProcessedVideoTrack(VideoStreamTrack):
         av_frame.time_base = time_base
         
         return av_frame
+    
+    def _resize_preserve_aspect_ratio(self, image, target_width, target_height):
+        """
+        Resize image while preserving aspect ratio, padding with black if needed.
+        
+        Args:
+            image: Input image (numpy array)
+            target_width: Target width
+            target_height: Target height
+            
+        Returns:
+            Resized image with preserved aspect ratio
+        """
+        h, w = image.shape[:2]
+        
+        # Calculate scaling factor to fit within target dimensions
+        scale_w = target_width / w
+        scale_h = target_height / h
+        scale = min(scale_w, scale_h)
+        
+        # Calculate new dimensions
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        
+        # Resize the image
+        resized = cv2.resize(image, (new_w, new_h))
+        
+        # Create output image with target dimensions (black background)
+        if len(image.shape) == 3:
+            output = np.zeros((target_height, target_width, image.shape[2]), dtype=image.dtype)
+        else:
+            output = np.zeros((target_height, target_width), dtype=image.dtype)
+        
+        # Calculate position to center the resized image
+        y_offset = (target_height - new_h) // 2
+        x_offset = (target_width - new_w) // 2
+        
+        # Place the resized image in the center
+        if len(image.shape) == 3:
+            output[y_offset:y_offset+new_h, x_offset:x_offset+new_w, :] = resized
+        else:
+            output[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        
+        return output
 
 
 class HybridRAW10Client:
@@ -116,8 +160,8 @@ class HybridRAW10Client:
         bit_depth: int = 10,
         framerate: float = 15.0,
         compression: str = "zlib",
-        video_width: int = 640,
-        video_height: int = 480
+        video_width: int = 1280,
+        video_height: int = 200
     ):
         """
         Initialize hybrid client.
@@ -329,9 +373,9 @@ async def main():
                        help="Capture framerate")
     parser.add_argument("--compression", choices=["none", "zlib", "lz4"], default="zlib",
                        help="Compression type")
-    parser.add_argument("--video-width", type=int, default=640,
+    parser.add_argument("--video-width", type=int, default=1280,
                        help="Video stream width")
-    parser.add_argument("--video-height", type=int, default=480,
+    parser.add_argument("--video-height", type=int, default=200,
                        help="Video stream height")
     parser.add_argument("--verbose", "-v", action="store_true",
                        help="Verbose logging")
