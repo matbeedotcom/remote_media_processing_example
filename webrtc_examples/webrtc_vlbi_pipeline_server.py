@@ -29,7 +29,7 @@ Pipeline Flow:
 
 Usage:
     python webrtc_vlbi_pipeline_server.py [options]
-    python webrtc_vlbi_pipeline_server.py --host 0.0.0.0 --port 8082 --cameras 4
+    python webrtc_vlbi_pipeline_server.py --host 0.0.0.0 --port 8085 --cameras 4
     python webrtc_vlbi_pipeline_server.py --enable-vlbi-processing --output-dir vlbi_results
 """
 
@@ -507,13 +507,13 @@ Enhanced Features:
 
 Environment Variables:
   SERVER_HOST=hostname        Server host (default: 0.0.0.0)
-  SERVER_PORT=port           Server port (default: 8082)
+  SERVER_PORT=port           Server port (default: 8085)
   NUM_CAMERAS=count          Number of cameras (default: 4)
   ENABLE_VLBI=true/false     Enable VLBI processing (default: true)
   OUTPUT_DIR=path            Output directory (default: vlbi_results)
 
 Examples:
-  python webrtc_vlbi_pipeline_server.py --host 0.0.0.0 --port 8082
+  python webrtc_vlbi_pipeline_server.py --host 0.0.0.0 --port 8085
   python webrtc_vlbi_pipeline_server.py --enable-vlbi --output-dir vlbi_data
   ENABLE_VLBI=true python webrtc_vlbi_pipeline_server.py
         """
@@ -521,8 +521,8 @@ Examples:
     
     parser.add_argument("--host", type=str, default=os.environ.get("SERVER_HOST", "0.0.0.0"),
                        help="Server host address (default: 0.0.0.0)")
-    parser.add_argument("--port", "-p", type=int, default=int(os.environ.get("SERVER_PORT", "8082")),
-                       help="Server port (default: 8082)")
+    parser.add_argument("--port", "-p", type=int, default=int(os.environ.get("SERVER_PORT", "8085")),
+                       help="Server port (default: 8085)")
     parser.add_argument("--cameras", "-c", type=int, default=int(os.environ.get("NUM_CAMERAS", "4")),
                        help="Number of cameras (default: 4)")
     parser.add_argument("--calibration-file", "-f", type=str, 
@@ -548,7 +548,7 @@ Examples:
 
 async def create_vlbi_webrtc_server(
     host: str = "0.0.0.0",
-    port: int = 8082,
+    port: int = 8085,
     num_cameras: int = 4,
     calibration_file: str = "vlbi_calibration_enhanced.json",
     output_width: int = 1920,
