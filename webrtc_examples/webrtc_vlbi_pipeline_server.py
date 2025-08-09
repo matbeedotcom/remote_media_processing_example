@@ -361,13 +361,14 @@ def create_enhanced_vlbi_pipeline(
     use_quad_splitter: bool = True,
     enable_vlbi_processing: bool = True,
     enable_drizzle_export: bool = True,
-    output_directory: str = "vlbi_results"
+    output_directory: str = "vlbi_results",
+    use_raw10_receiver: bool = False
 ) -> Pipeline:
     """
     Create enhanced VLBI pipeline with sub-pixel accuracy and drizzle compatibility.
     
     Pipeline flow:
-    1. VideoQuadSplitterNode - Split 1x4 input to 4 frames
+    1. RAW10ReceiverNode OR VideoQuadSplitterNode - Input processing
     2. EnhancedVideoFrameBuffer - Quality-aware frame synchronization
     3. SubPixelRefinementNode - Sub-pixel corner refinement
     4. ImageRegistrationNode - Precise inter-frame alignment  
@@ -378,17 +379,30 @@ def create_enhanced_vlbi_pipeline(
     """
     pipeline = Pipeline()
     
-    # 1. Quad splitter for composite input
-    if use_quad_splitter:
+    # 1. Input processing - RAW10 receiver or quad splitter
+    if use_raw10_receiver:
+        # Use RAW10 data channel receiver
+        from charuco.raw10_receiver_node import RAW10ReceiverNode
+        raw10_receiver = RAW10ReceiverNode(
+            num_cameras=num_cameras,
+            output_format='mono',
+            enable_debayer=False,
+            name="RAW10Receiver"
+        )
+        pipeline.add_node(raw10_receiver)
+        actual_num_cameras = num_cameras
+        logger.info(f"🔌 Using RAW10 data channel receiver for {num_cameras} cameras")
+    elif use_quad_splitter:
         quad_splitter = VideoQuadSplitterNode(name="QuadSplitter", num_splits=4)
         pipeline.add_node(quad_splitter)
         actual_num_cameras = 4
     else:
         actual_num_cameras = num_cameras
     
-    # 2. Enhanced video frame synchronization
-    frame_buffer = EnhancedVideoFrameBuffer(num_cameras=actual_num_cameras, name="EnhancedFrameBuffer")
-    pipeline.add_node(frame_buffer)
+    # 2. Enhanced video frame synchronization (skip if using RAW10)
+    if not use_raw10_receiver:
+        frame_buffer = EnhancedVideoFrameBuffer(num_cameras=actual_num_cameras, name="EnhancedFrameBuffer")
+        pipeline.add_node(frame_buffer)
     
     # 3. Sub-pixel corner refinement
     refinement_config = RefinementConfig(
@@ -542,6 +556,8 @@ Examples:
                        help="Output directory (default: vlbi_results)")
     parser.add_argument("--use-quad-splitter", "-q", action="store_true", default=True,
                        help="Use quad splitter for 1x4 input (default: true)")
+    parser.add_argument("--raw10", action="store_true", default=False,
+                       help="Use RAW10 data channel receiver instead of video")
     
     return parser.parse_args()
 
@@ -556,7 +572,8 @@ async def create_vlbi_webrtc_server(
     enable_vlbi_processing: bool = True,
     enable_drizzle_export: bool = True,
     output_directory: str = "vlbi_results",
-    use_quad_splitter: bool = True
+    use_quad_splitter: bool = True,
+    use_raw10_receiver: bool = False
 ) -> WebRTCServer:
     """Create enhanced VLBI WebRTC server."""
     
@@ -577,10 +594,11 @@ async def create_vlbi_webrtc_server(
             calibration_file=calibration_file,
             output_width=output_width,
             output_height=output_height,
-            use_quad_splitter=use_quad_splitter,
+            use_quad_splitter=use_quad_splitter if not use_raw10_receiver else False,
             enable_vlbi_processing=enable_vlbi_processing,
             enable_drizzle_export=enable_drizzle_export,
-            output_directory=output_directory
+            output_directory=output_directory,
+            use_raw10_receiver=use_raw10_receiver
         )
     
     # Create server
@@ -607,6 +625,7 @@ async def main():
     logger.info(f"Drizzle Export: {'Enabled' if args.enable_drizzle else 'Disabled'}")
     logger.info(f"Output Directory: {args.output_dir}")
     logger.info(f"Quad Splitter: {'Enabled' if args.use_quad_splitter else 'Disabled'}")
+    logger.info(f"RAW10 Mode: {'Enabled' if args.raw10 else 'Disabled'}")
     logger.info("")
     logger.info("Enhanced Pipeline Features:")
     logger.info("  • Sub-pixel corner refinement (<0.01px accuracy)")
@@ -628,7 +647,8 @@ async def main():
         enable_vlbi_processing=args.enable_vlbi,
         enable_drizzle_export=args.enable_drizzle,
         output_directory=args.output_dir,
-        use_quad_splitter=args.use_quad_splitter
+        use_quad_splitter=args.use_quad_splitter,
+        use_raw10_receiver=args.raw10
     )
     
     try:
