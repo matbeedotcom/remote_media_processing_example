@@ -1,0 +1,13 @@
+
+# To verify this board:
+# 1. Print at 200 DPI
+# 2. Measure that squares are 40.0mm
+# 3. Measure that markers are 20.0mm
+# 4. Use this configuration in your code:
+charuco_config = {
+    "squares_x": 5,
+    "squares_y": 4,
+    "square_length": 0.04,
+    "marker_length": 0.02,
+    "dictionary": "DICT_4X4_50"
+}

@@ -73,6 +73,8 @@ from pose_diversity_selector_node import PoseDiversitySelectorNode
 from perspective_warp_node import PerspectiveWarpNode, WarpConfig
 from multi_camera_calibration_node import MultiCameraCalibrationNode, MultiCameraConfig
 from video_quad_splitter_node import VideoQuadSplitterNode, VideoQuadMergerNode
+from live_preview_node import LivePreviewNode, LivePreviewConfig
+from desktop_preview_node import DesktopPreviewNode, DesktopPreviewConfig
 
 # Configure logging
 logging.basicConfig(
@@ -85,17 +87,19 @@ logger = logging.getLogger(__name__)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 logging.getLogger("aiortc").setLevel(logging.WARNING)
 logging.getLogger("remotemedia.core.pipeline").setLevel(logging.WARNING)
+logging.getLogger("remotemedia.webrtc.pipeline_processor").setLevel(logging.WARNING)
 
 # Set all other nodes to WARNING level except charuco_detection_node and multi_camera_calibration_node
 logging.getLogger("video_stream_analyzer").setLevel(logging.WARNING)
 logging.getLogger("video_quad_splitter_node").setLevel(logging.WARNING) 
 logging.getLogger("pose_diversity_selector_node").setLevel(logging.WARNING)
-logging.getLogger("perspective_warp_node").setLevel(logging.WARNING)
+logging.getLogger("perspective_warp_node").setLevel(logging.INFO)
+logging.getLogger("desktop_preview_node").setLevel(logging.INFO)  # Enable desktop preview debugging
 logging.getLogger(__name__).setLevel(logging.WARNING)  # Main server logs
 logging.getLogger("Pipeline").setLevel(logging.WARNING)
 
-# Keep these at INFO level for camera detection monitoring
-# logging.getLogger("charuco_detection_node").setLevel(logging.INFO)  # Already INFO by default
+# Reduce charuco detection spam - only show multi-camera status from calibration node
+logging.getLogger("charuco_detection_node").setLevel(logging.WARNING)
 # logging.getLogger("multi_camera_calibration_node").setLevel(logging.INFO)  # Already INFO by default
 
 
@@ -225,20 +229,39 @@ class VideoOutputFormatter(Node):
     """
     Formats video output for WebRTC streaming.
     Converts calibration results into streamable video frames.
+    Can switch between combined warped view and live preview mode.
     """
     
-    def __init__(self, name: Optional[str] = None):
+    def __init__(self, show_live_preview: bool = True, name: Optional[str] = None):
         super().__init__(name=name or "VideoOutputFormatter")
         self.frame_counter = 0
+        self.show_live_preview = show_live_preview
         
     async def process(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Format calibration output for video streaming."""
         try:
+            # Check if we have preview frame (from live preview mode)
+            preview_frame = data.get('preview_frame')
             combined_view = data.get('combined_view')
             warped_frames = data.get('warped_frames', [])
             calibration_status = data.get('calibration_status', {})
             
-            if combined_view is not None:
+            output_frame = None
+            
+            # Prefer live preview if available and enabled
+            if self.show_live_preview and preview_frame is not None:
+                output_frame = preview_frame
+                self.frame_counter += 1
+                
+                return {
+                    'frame': output_frame,
+                    'timestamp': self.frame_counter,
+                    'calibration_status': calibration_status,
+                    'mode': 'live_preview'
+                }
+            
+            # Fallback to combined warped view
+            elif combined_view is not None:
                 # Add calibration status overlay
                 output_frame = self._add_status_overlay(combined_view, calibration_status)
                 self.frame_counter += 1
@@ -247,15 +270,17 @@ class VideoOutputFormatter(Node):
                     'frame': output_frame,
                     'timestamp': self.frame_counter,
                     'calibration_status': calibration_status,
-                    'warped_frames': warped_frames
+                    'warped_frames': warped_frames,
+                    'mode': 'combined_view'
                 }
             
-            # If no combined view, create a status frame
+            # If no frames available, create a status frame
             status_frame = self._create_status_frame(calibration_status)
             return {
                 'frame': status_frame,
                 'timestamp': self.frame_counter,
-                'calibration_status': calibration_status
+                'calibration_status': calibration_status,
+                'mode': 'status_only'
             }
             
         except Exception as e:
@@ -308,6 +333,19 @@ class VideoOutputFormatter(Node):
             cv2.putText(frame, "Show ChAruco board to cameras", (140, 300), font, 0.6, (0, 165, 255), 1)
         
         return frame
+    
+    def _create_completion_frame(self) -> np.ndarray:
+        """Create a completion frame when processing is done."""
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        # Draw completion message
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(frame, "Calibration Complete!", (120, 180), font, 1.0, (0, 255, 0), 2)
+        cv2.putText(frame, "Homographies Computed", (160, 220), font, 0.7, (0, 255, 0), 2)
+        cv2.putText(frame, "Processing Stopped", (190, 260), font, 0.6, (255, 255, 255), 1)
+        cv2.putText(frame, "Check saved files in calibration_results/", (90, 300), font, 0.5, (200, 200, 200), 1)
+        
+        return frame
 
 
 def create_charuco_pipeline(
@@ -315,16 +353,22 @@ def create_charuco_pipeline(
     calibration_file: str = "charuco_calibration.json",
     output_width: int = 1920,
     output_height: int = 1080,
-    use_quad_splitter: bool = False
+    use_quad_splitter: bool = False,
+    charuco_config_file: Optional[str] = None,
+    enable_live_preview: bool = True,
+    enable_desktop_preview: bool = False,
+    min_corners_for_homography: int = 8,
+    force_fresh_calibration: bool = False
 ) -> Pipeline:
     """
     Create a ChAruco calibration and perspective warping pipeline.
     
     Pipeline flow:
     1. VideoQuadSplitterNode (optional) - Splits quad layout into separate frames
-    2. VideoFrameBuffer - Synchronizes frames from multiple cameras
+    2. VideoFrameBuffer - Synchronizes frames from multiple cameras  
     3. MultiCameraCalibrationNode - Handles ChAruco detection, calibration, and warping
-    4. VideoOutputFormatter - Formats output for WebRTC streaming
+    4. LivePreviewNode - Creates visual debugging interface with detection overlays
+    5. VideoOutputFormatter - Formats output for WebRTC streaming (live preview or warped view)
     """
     pipeline = Pipeline()
     # Video stream analyzer for detailed frame logging
@@ -345,20 +389,26 @@ def create_charuco_pipeline(
     pipeline.add_node(frame_buffer)
     
     # ChAruco calibration configuration
-    charuco_config = CharucoConfig(
-        squares_x=27,
-        squares_y=17,
-        square_length=0.0092,
-        marker_length=0.006,
-        dictionary="DICT_6X6_250",
-        margins=0.0058,
-        dpi=227
-    )
+    if charuco_config_file and os.path.exists(charuco_config_file):
+        logger.info(f"📋 Loading ChAruco configuration from: {charuco_config_file}")
+        charuco_config = CharucoConfig.from_json_file(charuco_config_file)
+    else:
+        # Use default 5x4 configuration
+        charuco_config = CharucoConfig(
+            squares_x=5,
+            squares_y=4,
+            square_length=0.03,
+            marker_length=0.015,
+            dictionary="DICT_4X4_50",
+            margins=0.005,
+            dpi=200
+        )
     
     warp_config = WarpConfig(
         output_width=output_width,
         output_height=output_height,
-        reference_camera=0
+        reference_camera=0,
+        min_corners_for_homography=min_corners_for_homography
     )
     
     multi_camera_config = MultiCameraConfig(
@@ -369,7 +419,8 @@ def create_charuco_pipeline(
         min_frames_for_calibration=5,
         auto_calibrate=True,
         calibration_file=calibration_file,
-        enable_live_preview=True
+        enable_live_preview=True,
+        force_fresh_calibration=force_fresh_calibration
     )
     
     # Main calibration node
@@ -379,8 +430,43 @@ def create_charuco_pipeline(
     )
     pipeline.add_node(calibration_node)
     
+    # Live preview node for visual debugging (optional)
+    if enable_live_preview:
+        live_preview_config = LivePreviewConfig(
+            preview_width=320,
+            preview_height=240,
+            grid_cols=2,
+            show_corner_ids=True,
+            show_pose_info=True,
+            show_statistics=True
+        )
+        
+        live_preview_node = LivePreviewNode(
+            config=live_preview_config,
+            charuco_config=charuco_config,
+            name="LivePreview"
+        )
+        pipeline.add_node(live_preview_node)
+    
+    # Desktop preview node for saving images to disk (optional)
+    if enable_desktop_preview:
+        desktop_preview_config = DesktopPreviewConfig(
+            enable_pygame_display=True,  # Use pygame for direct screen rendering
+            enable_opencv_display=False,  # Disable OpenCV (fallback only)
+            window_width=1200,
+            window_height=800, 
+            window_title="ChAruco Live Preview",
+            enable_file_saving=False,  # Disable file saving for maximum performance
+        )
+        
+        desktop_preview_node = DesktopPreviewNode(
+            config=desktop_preview_config,
+            name="DesktopPreview"
+        )
+        pipeline.add_node(desktop_preview_node)
+    
     # Output formatting for WebRTC
-    output_formatter = VideoOutputFormatter(name="VideoOutput")
+    output_formatter = VideoOutputFormatter(show_live_preview=enable_live_preview, name="VideoOutput")
     pipeline.add_node(output_formatter)
     
     return pipeline
@@ -417,7 +503,12 @@ async def create_charuco_webrtc_server(
     calibration_file: str = "charuco_calibration.json",
     output_width: int = 1920,
     output_height: int = 1080,
-    use_quad_splitter: bool = False
+    use_quad_splitter: bool = False,
+    charuco_config_file: Optional[str] = None,
+    enable_live_preview: bool = True,
+    enable_desktop_preview: bool = False,
+    min_corners_for_homography: int = 8,
+    force_fresh_calibration: bool = False
 ) -> WebRTCServer:
     """Create and configure the ChAruco WebRTC server."""
     
@@ -438,7 +529,12 @@ async def create_charuco_webrtc_server(
             calibration_file=calibration_file,
             output_width=output_width,
             output_height=output_height,
-            use_quad_splitter=use_quad_splitter
+            use_quad_splitter=use_quad_splitter,
+            charuco_config_file=charuco_config_file,
+            enable_live_preview=enable_live_preview,
+            enable_desktop_preview=enable_desktop_preview,
+            min_corners_for_homography=min_corners_for_homography,
+            force_fresh_calibration=force_fresh_calibration
         )
     
     # Create server with ChAruco handler
@@ -517,6 +613,41 @@ Examples:
         help="Enable quad splitter for composite input frames (default: false, env: USE_QUAD_SPLITTER)"
     )
     
+    parser.add_argument(
+        "--charuco-config", "-cc",
+        type=str,
+        default=os.environ.get("CHARUCO_CONFIG_FILE", None),
+        help="ChAruco board configuration JSON file (default: use built-in 5x4 config, env: CHARUCO_CONFIG_FILE)"
+    )
+    
+    parser.add_argument(
+        "--live-preview", "-lp",
+        action="store_true",
+        default=os.environ.get("ENABLE_LIVE_PREVIEW", "true").lower() == "true",
+        help="Enable live preview with detection overlays (default: true, env: ENABLE_LIVE_PREVIEW)"
+    )
+    
+    parser.add_argument(
+        "--desktop-preview", "-dp",
+        action="store_true",
+        default=os.environ.get("ENABLE_DESKTOP_PREVIEW", "false").lower() == "true",
+        help="Enable desktop preview by saving images to disk (default: false, env: ENABLE_DESKTOP_PREVIEW)"
+    )
+    
+    parser.add_argument(
+        "--min-corners", "-mc",
+        type=int,
+        default=int(os.environ.get("MIN_CORNERS_FOR_HOMOGRAPHY", "8")),
+        help="Minimum corners required for homography computation (default: 8, env: MIN_CORNERS_FOR_HOMOGRAPHY)"
+    )
+    
+    parser.add_argument(
+        "--force-fresh-calibration", "-fc",
+        action="store_true",
+        default=os.environ.get("FORCE_FRESH_CALIBRATION", "false").lower() == "true",
+        help="Force fresh camera calibration, ignore existing calibration files (default: false, env: FORCE_FRESH_CALIBRATION)"
+    )
+    
     return parser.parse_args()
 
 
@@ -534,6 +665,10 @@ async def main():
     OUTPUT_WIDTH = args.output_width
     OUTPUT_HEIGHT = args.output_height
     USE_QUAD_SPLITTER = args.use_quad_splitter
+    ENABLE_LIVE_PREVIEW = args.live_preview
+    ENABLE_DESKTOP_PREVIEW = args.desktop_preview
+    MIN_CORNERS_FOR_HOMOGRAPHY = args.min_corners
+    FORCE_FRESH_CALIBRATION = args.force_fresh_calibration
     
     # Temporarily set main logger to INFO for startup messages
     main_logger = logging.getLogger(__name__)
@@ -545,14 +680,26 @@ async def main():
     logger.info(f"Calibration File: {CALIBRATION_FILE}")
     logger.info(f"Output Resolution: {OUTPUT_WIDTH}x{OUTPUT_HEIGHT}")
     logger.info(f"Quad Splitter: {'Enabled' if USE_QUAD_SPLITTER else 'Disabled'}")
+    logger.info(f"Live Preview: {'Enabled' if ENABLE_LIVE_PREVIEW else 'Disabled'}")
+    logger.info(f"Desktop Preview: {'Enabled' if ENABLE_DESKTOP_PREVIEW else 'Disabled'}")
+    logger.info(f"Min Corners for Homography: {MIN_CORNERS_FOR_HOMOGRAPHY}")
+    logger.info(f"Fresh Calibration: {'Enabled - will ignore existing calibration' if FORCE_FRESH_CALIBRATION else 'Disabled - will use existing calibration if available'}")
+    # Show ChAruco board configuration
+    if args.charuco_config and os.path.exists(args.charuco_config):
+        config_display = CharucoConfig.from_json_file(args.charuco_config)
+        config_source = f"from {args.charuco_config}"
+    else:
+        config_display = CharucoConfig()  # Use defaults
+        config_source = "built-in defaults"
+    
     logger.info("")
-    logger.info("ChAruco Board Configuration:")
-    logger.info("  • Size: 27×17 squares")
-    logger.info("  • Square Length: 9.2mm")
-    logger.info("  • Marker Length: 6mm")
-    logger.info("  • Dictionary: DICT_6X6_250")
-    logger.info("  • Margins: 5.8mm")
-    logger.info("  • Print DPI: 227")
+    logger.info(f"ChAruco Board Configuration ({config_source}):")
+    logger.info(f"  • Size: {config_display.squares_x}×{config_display.squares_y} squares")
+    logger.info(f"  • Square Length: {config_display.square_length*1000:.1f}mm")
+    logger.info(f"  • Marker Length: {config_display.marker_length*1000:.1f}mm")
+    logger.info(f"  • Dictionary: {config_display.dictionary}")
+    logger.info(f"  • Margins: {config_display.margins*1000:.1f}mm")
+    logger.info(f"  • Print DPI: {config_display.dpi}")
     
     # Create server
     server = await create_charuco_webrtc_server(
@@ -562,7 +709,12 @@ async def main():
         calibration_file=CALIBRATION_FILE,
         output_width=OUTPUT_WIDTH,
         output_height=OUTPUT_HEIGHT,
-        use_quad_splitter=USE_QUAD_SPLITTER
+        use_quad_splitter=USE_QUAD_SPLITTER,
+        charuco_config_file=args.charuco_config,
+        enable_live_preview=ENABLE_LIVE_PREVIEW,
+        enable_desktop_preview=ENABLE_DESKTOP_PREVIEW,
+        min_corners_for_homography=MIN_CORNERS_FOR_HOMOGRAPHY,
+        force_fresh_calibration=FORCE_FRESH_CALIBRATION
     )
     
     try:
@@ -582,6 +734,9 @@ async def main():
         logger.info("   • Camera calibration")
         logger.info("   • Perspective warping and alignment")
         logger.info("   • Live composite view streaming")
+        if ENABLE_DESKTOP_PREVIEW:
+            logger.info("   • Real-time desktop preview (OpenCV + image files)")
+            logger.info("   • Preview images saved to: ./live_preview/")
         logger.info("")
         logger.info("📋 Usage Instructions:")
         logger.info("   1. Connect multiple cameras/devices to the WebRTC server")

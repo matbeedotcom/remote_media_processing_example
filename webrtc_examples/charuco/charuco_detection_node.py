@@ -22,13 +22,52 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CharucoConfig:
     """Configuration for ChAruco board."""
-    squares_x: int = 27
-    squares_y: int = 17
-    square_length: float = 0.0092
-    marker_length: float = 0.006
-    dictionary: str = "DICT_6X6_250"
-    margins: float = 0.0058
-    dpi: int = 227
+    squares_x: int = 5
+    squares_y: int = 4
+    square_length: float = 0.04
+    marker_length: float = 0.02
+    dictionary: str = "DICT_4X4_50"
+    margins: float = 0.005
+    dpi: int = 200
+    
+    @classmethod
+    def from_json_file(cls, json_path: str) -> 'CharucoConfig':
+        """Load configuration from JSON file."""
+        import json
+        import os
+        
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(f"ChAruco config file not found: {json_path}")
+        
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        return cls(
+            squares_x=data.get('squares_x', 5),
+            squares_y=data.get('squares_y', 4),
+            square_length=data.get('square_length', 0.03),
+            marker_length=data.get('marker_length', 0.015),
+            dictionary=data.get('dictionary', 'DICT_4X4_50'),
+            margins=data.get('margins', 0.005),
+            dpi=data.get('dpi', 200)
+        )
+    
+    def to_json_file(self, json_path: str):
+        """Save configuration to JSON file."""
+        import json
+        
+        data = {
+            'squares_x': self.squares_x,
+            'squares_y': self.squares_y,
+            'square_length': self.square_length,
+            'marker_length': self.marker_length,
+            'dictionary': self.dictionary,
+            'margins': self.margins,
+            'dpi': self.dpi
+        }
+        
+        with open(json_path, 'w') as f:
+            json.dump(data, f, indent=2)
 
 
 @dataclass

@@ -1,0 +1,9 @@
+{
+  "squares_x": 5,
+  "squares_y": 4,
+  "square_length": 0.04,
+  "marker_length": 0.02,
+  "dictionary": "DICT_4X4_50",
+  "margins": 0.005,
+  "dpi": 200
+}
