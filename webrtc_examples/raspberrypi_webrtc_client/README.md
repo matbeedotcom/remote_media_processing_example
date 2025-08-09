@@ -4,6 +4,7 @@ A Python-based WebRTC client for Raspberry Pi that streams camera feeds to the C
 
 ## Features
 
+### Standard Video Streaming
 - **Multi-camera support** - Stream from USB cameras, Raspberry Pi cameras, or both
 - **Automatic camera detection** - Discovers and lists available cameras
 - **Auto-resolution detection** - Automatically uses maximum available resolution for Picamera2
@@ -12,6 +13,14 @@ A Python-based WebRTC client for Raspberry Pi that streams camera feeds to the C
 - **Performance monitoring** - Built-in FPS and error tracking
 - **Debug preview** - Save and analyze frames being sent
 - **Flexible configuration** - Command-line and programmatic configuration
+
+### RAW10 Data Channel Transfer (New)
+- **Uncompressed sensor data** - Transfer RAW10/RAW8 bayer data directly
+- **Data channel transport** - Bypass video compression for maximum quality
+- **Compression options** - None, zlib, or lz4 compression
+- **Multi-camera synchronization** - Hardware-synchronized quad arrays
+- **Dual mode operation** - Video preview + RAW data simultaneously
+- **VLBI optimized** - Designed for interferometric applications
 
 ## Hardware Requirements
 
@@ -66,7 +75,7 @@ sudo usermod -a -G video $USER
 
 ## Usage
 
-### Basic Usage
+### Basic Video Streaming
 
 ```bash
 # Stream from camera 0
@@ -80,6 +89,25 @@ python3 main.py --camera 0,2,3
 
 # Connect to remote server
 python3 main.py --server ws://192.168.1.100:8081/ws --camera all
+```
+
+### RAW10 Data Channel Mode
+
+```bash
+# Single camera RAW10 transfer
+python3 raw10_webrtc_client.py --server http://localhost:8082 --camera 0 --bit-depth 10
+
+# Quad camera array with RAW10
+python3 raw10_webrtc_client.py --quad --cameras 0 1 2 3 --compression zlib
+
+# RAW8 for higher framerate
+python3 raw10_webrtc_client.py --bit-depth 8 --fps 50 --width 2560 --height 400
+
+# Dual mode: Video preview + RAW data
+python3 raw10_webrtc_client.py --video-preview --video-width 640 --video-height 480
+
+# No compression for lowest latency
+python3 raw10_webrtc_client.py --compression none --fps 15
 ```
 
 ### Camera Management
@@ -138,6 +166,8 @@ python3 main.py --save-preview-frames --preview-dir /tmp/frames
 
 ## Command Line Options
 
+### Standard Video Client (main.py)
+
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--server` | WebRTC server WebSocket URL | `ws://localhost:8081/ws` |
@@ -157,6 +187,25 @@ python3 main.py --save-preview-frames --preview-dir /tmp/frames
 | `--save-preview-frames` | Save preview frames to disk | - |
 | `--preview-dir` | Directory for preview frames | `/tmp/webrtc_preview` |
 | `--preview-interval` | Save every N frames | `30` |
+
+### RAW10 Data Channel Client (raw10_webrtc_client.py)
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--server` | WebRTC server URL | `http://localhost:8082` |
+| `--camera` | Camera index | `0` |
+| `--quad` | Use quad camera array | - |
+| `--cameras` | Camera indices for quad mode | `[0, 1, 2, 3]` |
+| `--width` | RAW capture width | `3280` |
+| `--height` | RAW capture height | `2464` |
+| `--bit-depth` | Bit depth (8 or 10) | `10` |
+| `--fps` | Capture framerate | `15.0` |
+| `--compression` | Compression type (none, zlib, lz4) | `zlib` |
+| `--video-preview` | Enable video preview stream | - |
+| `--video-width` | Video preview width | `640` |
+| `--video-height` | Video preview height | `480` |
+| `--video-fps` | Video preview framerate | `30.0` |
+| `--verbose` | Verbose logging | - |
 
 ## Camera Types
 

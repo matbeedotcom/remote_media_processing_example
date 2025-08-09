@@ -120,12 +120,32 @@ class CharucoDetectionNode(Node):
             self.aruco_dict
         )
         
-        # Initialize detector parameters
+        # Initialize detector parameters with sub-pixel refinement
         self.detector_params = cv2.aruco.DetectorParameters()
+        # Enhanced detection for better sub-pixel accuracy
+        self.detector_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        self.detector_params.cornerRefinementWinSize = 5
+        self.detector_params.cornerRefinementMaxIterations = 30
+        self.detector_params.cornerRefinementMinAccuracy = 0.01  # Sub-pixel accuracy target
+        
+        # Adaptive thresholding for better marker detection
+        self.detector_params.adaptiveThreshWinSizeMin = 3
+        self.detector_params.adaptiveThreshWinSizeMax = 23
+        self.detector_params.adaptiveThreshWinSizeStep = 10
+        self.detector_params.adaptiveThreshConstant = 7
+        
+        # Enhanced corner detection
+        self.detector_params.minMarkerPerimeterRate = 0.03
+        self.detector_params.maxMarkerPerimeterRate = 4.0
+        self.detector_params.polygonalApproxAccuracyRate = 0.03
+        self.detector_params.minCornerDistanceRate = 0.05
+        
         self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.detector_params)
         
-        # Initialize ChAruco detector (newer API)
+        # Initialize ChAruco detector with enhanced parameters
         charuco_params = cv2.aruco.CharucoParameters()
+        charuco_params.cameraMatrix = None  # Will be set per detection
+        charuco_params.distCoeffs = None    # Will be set per detection
         self.charuco_detector = cv2.aruco.CharucoDetector(self.board, charuco_params)
         
         # Calculate expected corners for full board detection
@@ -163,6 +183,9 @@ class CharucoDetectionNode(Node):
             else:
                 gray = image
             
+            # Apply image enhancement for better sub-pixel accuracy
+            gray = self._enhance_image_for_subpixel_accuracy(gray)
+            
             # Detect ArUco markers first
             corners, ids, rejected = self.aruco_detector.detectMarkers(gray)
             
@@ -178,10 +201,21 @@ class CharucoDetectionNode(Node):
             pose_success = False
             
             if ids is not None and len(ids) > 0:
-                # Use the new ChAruco detector API
-                charuco_corners, charuco_ids, aruco_corners, aruco_ids = self.charuco_detector.detectBoard(gray)
+                # Update ChAruco detector parameters with current camera calibration if available
+                if camera_matrix is not None and dist_coeffs is not None:
+                    charuco_params = cv2.aruco.CharucoParameters()
+                    charuco_params.cameraMatrix = camera_matrix
+                    charuco_params.distCoeffs = dist_coeffs
+                    charuco_detector = cv2.aruco.CharucoDetector(self.board, charuco_params)
+                else:
+                    charuco_detector = self.charuco_detector
                 
+                # Use the ChAruco detector API
+                charuco_corners, charuco_ids, aruco_corners, aruco_ids = charuco_detector.detectBoard(gray)
+                
+                # Apply sub-pixel corner refinement to ChAruco corners
                 if charuco_corners is not None and len(charuco_corners) > 3:
+                    charuco_corners = self._refine_charuco_corners_subpixel(gray, charuco_corners)
                     self.detection_count += 1
                     charuco_corners_count = len(charuco_corners)
                     
@@ -248,3 +282,49 @@ class CharucoDetectionNode(Node):
         except Exception as e:
             logger.error(f"❌ Error in ChAruco detection (frame #{self.frame_count}): {e}")
             return PoseResult(camera_id=camera_id, timestamp=timestamp)
+    
+    def _enhance_image_for_subpixel_accuracy(self, gray: np.ndarray) -> np.ndarray:
+        """Apply image enhancements for better sub-pixel corner detection accuracy."""
+        try:
+            # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) for better contrast
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            enhanced = clahe.apply(gray)
+            
+            # Apply slight Gaussian blur to reduce noise while preserving edges
+            enhanced = cv2.GaussianBlur(enhanced, (3, 3), 0.5)
+            
+            # Apply bilateral filter to reduce noise while preserving sharp edges
+            enhanced = cv2.bilateralFilter(enhanced, d=5, sigmaColor=50, sigmaSpace=50)
+            
+            return enhanced
+        except Exception as e:
+            logger.warning(f"Image enhancement failed, using original: {e}")
+            return gray
+    
+    def _refine_charuco_corners_subpixel(self, gray: np.ndarray, corners: np.ndarray) -> np.ndarray:
+        """Apply sub-pixel corner refinement using cornerSubPix for enhanced accuracy."""
+        try:
+            if corners is None or len(corners) == 0:
+                return corners
+            
+            # Define criteria for sub-pixel corner refinement
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            
+            # Apply cornerSubPix for sub-pixel accuracy
+            # Convert corners to the format expected by cornerSubPix
+            corners_2d = corners.reshape(-1, 1, 2).astype(np.float32)
+            
+            # Refine corner positions to sub-pixel accuracy
+            refined_corners = cv2.cornerSubPix(
+                gray, 
+                corners_2d, 
+                winSize=(5, 5),      # Half-window size 
+                zeroZone=(-1, -1),   # No zero zone
+                criteria=criteria
+            )
+            
+            return refined_corners.reshape(-1, 2)
+            
+        except Exception as e:
+            logger.warning(f"Sub-pixel corner refinement failed, using original corners: {e}")
+            return corners

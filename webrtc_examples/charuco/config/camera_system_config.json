@@ -1,0 +1,13 @@
+{
+  "num_cameras": 4,
+  "sensor_name": "OV9281",
+  "focal_length_mm": 2.8,
+  "f_ratio": 2.8,
+  "aperture_mm": 1.0,
+  "camera_spacing_mm": 65.0,
+  "mounting_pattern": "square",
+  "typical_seeing_arcsec": 2.0,
+  "site_elevation_m": 0.0,
+  "drizzle_scale": 0.5,
+  "dither_pattern": "random"
+}

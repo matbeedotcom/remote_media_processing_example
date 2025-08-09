@@ -23,6 +23,7 @@ from remotemedia.core.node import Node
 from charuco_detection_node import CharucoDetectionNode, CharucoConfig, PoseResult
 from pose_diversity_selector_node import PoseDiversitySelectorNode, CalibrationFrame
 from perspective_warp_node import PerspectiveWarpNode, WarpConfig
+from sensor_config import SensorSpecifications, SensorDatabase, CameraSystemConfig
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +72,8 @@ class MultiCameraConfig:
     num_cameras: int = 4
     charuco_config: CharucoConfig = field(default_factory=CharucoConfig)
     warp_config: WarpConfig = field(default_factory=WarpConfig)
-    max_calibration_frames: int = 10
-    min_frames_for_calibration: int = 5
+    max_calibration_frames: int = 20  # Increased for better accuracy
+    min_frames_for_calibration: int = 10  # More frames for sub-pixel accuracy
     auto_calibrate: bool = True
     calibration_file: Optional[str] = None
     enable_live_preview: bool = True
@@ -81,6 +82,11 @@ class MultiCameraConfig:
     enable_stereo_calibration: bool = True   # Perform stereo calibration between camera pairs
     stereo_calibration_file: Optional[str] = "stereo_calibration.json"  # File to save stereo data
     reference_camera_id: int = 0             # Reference camera for multi-camera poses
+    # Sensor configuration
+    sensor_name: Optional[str] = "OV9281"    # Default to user's OV9281 sensor
+    sensor_config_file: Optional[str] = "sensor_database.json"  # Sensor database file
+    camera_system_config_file: Optional[str] = "camera_system_config.json"  # System config
+    focal_length_mm: Optional[float] = 2.8   # Default to user's 2.8mm lens focal length
 
 
 class MultiCameraCalibrationNode(Node):
@@ -123,6 +129,12 @@ class MultiCameraCalibrationNode(Node):
         self.stereo_calibrations: Dict[Tuple[int, int], StereoPairCalibration] = {}
         self.camera_poses: Dict[int, CameraPose] = {}
         self.stereo_calibration_performed = False
+        
+        # Sensor configuration
+        self.sensor_database = SensorDatabase()
+        self.sensor_specs: Optional[SensorSpecifications] = None
+        self.camera_system: Optional[CameraSystemConfig] = None
+        self._initialize_sensor_config()
         
         # Load existing calibration if available and not forcing fresh calibration
         if (self.config.calibration_file and 
@@ -424,6 +436,175 @@ class MultiCameraCalibrationNode(Node):
         except Exception as e:
             logger.error(f"Failed to save stereo calibration: {e}")
     
+    def _initialize_sensor_config(self):
+        """Initialize sensor configuration and load sensor database."""
+        try:
+            # Load sensor database from file if it exists
+            if self.config.sensor_config_file and os.path.exists(self.config.sensor_config_file):
+                self.sensor_database.load_from_file(self.config.sensor_config_file)
+                logger.info(f"📷 Loaded sensor database from {self.config.sensor_config_file}")
+            
+            # Get sensor specifications
+            if self.config.sensor_name:
+                self.sensor_specs = self.sensor_database.get_sensor(self.config.sensor_name)
+                if self.sensor_specs:
+                    logger.info(f"📷 Using sensor: {self.sensor_specs.name}")
+                    logger.info(f"   Sensor size: {self.sensor_specs.sensor_width_mm:.2f}x{self.sensor_specs.sensor_height_mm:.2f}mm")
+                    logger.info(f"   Pixel pitch: {self.sensor_specs.pixel_pitch_um:.2f}μm")
+                    logger.info(f"   Resolution: {self.sensor_specs.resolution_width}x{self.sensor_specs.resolution_height}")
+                    
+                    # Calculate astronomical parameters if focal length is provided
+                    if self.config.focal_length_mm:
+                        plate_scale = self.sensor_specs.plate_scale_arcsec_per_pixel(self.config.focal_length_mm)
+                        fov = self.sensor_specs.field_of_view_deg(self.config.focal_length_mm)
+                        sampling = self.sensor_specs.sampling_ratio(self.config.focal_length_mm, 2.0)
+                        
+                        logger.info(f"🔭 Optical system with {self.config.focal_length_mm}mm focal length:")
+                        logger.info(f"   Plate scale: {plate_scale:.2f}\"/pixel")
+                        logger.info(f"   Field of view: {fov[0]:.2f}° x {fov[1]:.2f}°")
+                        logger.info(f"   Sampling @ 2\" seeing: {sampling:.2f}x")
+                else:
+                    logger.warning(f"⚠️ Sensor {self.config.sensor_name} not found in database")
+            
+            # Load camera system configuration
+            if self.config.camera_system_config_file and os.path.exists(self.config.camera_system_config_file):
+                with open(self.config.camera_system_config_file, 'r') as f:
+                    system_data = json.load(f)
+                    self.camera_system = CameraSystemConfig.from_dict(system_data)
+                    logger.info(f"🎯 Loaded camera system configuration")
+                    logger.info(f"   {self.camera_system.num_cameras} cameras in {self.camera_system.mounting_pattern} pattern")
+                    logger.info(f"   Camera spacing: {self.camera_system.camera_spacing_mm}mm")
+                    
+                    # Calculate total system FOV
+                    if self.sensor_specs:
+                        total_fov = self.camera_system.calculate_system_fov(self.sensor_database)
+                        if total_fov:
+                            logger.info(f"   Total system FOV: {total_fov[0]:.2f}° x {total_fov[1]:.2f}°")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize sensor configuration: {e}")
+    
+    def enhance_calibration_with_physical_units(self):
+        """
+        Enhance calibration data with physical measurements using sensor specifications.
+        Converts pixel measurements to real-world units (mm, degrees, arcseconds).
+        """
+        if not self.sensor_specs:
+            logger.warning("⚠️ No sensor specifications available for physical unit conversion")
+            return
+        
+        logger.info("🔬 Enhancing calibration with physical measurements")
+        
+        # Enhance camera intrinsics with physical focal length
+        for cam_id, cal in self.camera_calibrations.items():
+            if cal.camera_matrix is not None:
+                fx_pixels = cal.camera_matrix[0, 0]
+                fy_pixels = cal.camera_matrix[1, 1]
+                
+                # Convert pixel focal length to mm
+                fx_mm = fx_pixels * self.sensor_specs.pixel_width_um / 1000
+                fy_mm = fy_pixels * self.sensor_specs.pixel_height_um / 1000
+                focal_length_mm = (fx_mm + fy_mm) / 2
+                
+                # Calculate field of view for this camera
+                fov_x = 2 * np.degrees(np.arctan(self.sensor_specs.sensor_width_mm / (2 * focal_length_mm)))
+                fov_y = 2 * np.degrees(np.arctan(self.sensor_specs.sensor_height_mm / (2 * focal_length_mm)))
+                
+                # Calculate plate scale
+                plate_scale = self.sensor_specs.plate_scale_arcsec_per_pixel(focal_length_mm)
+                
+                # Store physical parameters (extending the calibration data)
+                cal.focal_length_mm = focal_length_mm
+                cal.fov_degrees = (fov_x, fov_y)
+                cal.plate_scale_arcsec_per_pixel = plate_scale
+                
+                logger.info(f"📷 Camera {cam_id} physical parameters:")
+                logger.info(f"   Focal length: {focal_length_mm:.2f}mm")
+                logger.info(f"   FOV: {fov_x:.2f}° x {fov_y:.2f}°")
+                logger.info(f"   Plate scale: {plate_scale:.2f}\"/pixel")
+        
+        # Enhance stereo calibration with physical baseline measurements
+        for (cam1_id, cam2_id), stereo_data in self.stereo_calibrations.items():
+            if stereo_data.translation_vector is not None:
+                # Translation vector is in ChAruco board units (typically mm)
+                board_square_size = self.config.charuco_config.square_length * 1000  # Convert to mm
+                
+                # Scale translation to real-world units
+                T_mm = stereo_data.translation_vector * board_square_size
+                baseline_mm = np.linalg.norm(T_mm)
+                
+                # Update stereo data with physical units
+                stereo_data.baseline_distance = baseline_mm
+                stereo_data.translation_vector_mm = T_mm
+                
+                logger.info(f"🔗 Stereo pair ({cam1_id}, {cam2_id}) physical baseline: {baseline_mm:.2f}mm")
+        
+        # Calculate system-wide parameters
+        if self.camera_poses:
+            baselines = []
+            for pose in self.camera_poses.values():
+                if pose.baseline_distance and pose.baseline_distance > 0:
+                    baselines.append(pose.baseline_distance)
+            
+            if baselines:
+                avg_baseline = np.mean(baselines)
+                max_baseline = np.max(baselines)
+                
+                logger.info(f"🎯 System baselines:")
+                logger.info(f"   Average: {avg_baseline:.2f}mm")
+                logger.info(f"   Maximum: {max_baseline:.2f}mm")
+    
+    def save_enhanced_calibration(self, filepath: str):
+        """Save calibration with physical units to comprehensive file."""
+        try:
+            data = {
+                'timestamp': datetime.now().isoformat(),
+                'sensor_info': self.sensor_specs.to_dict() if self.sensor_specs else None,
+                'camera_intrinsics': {},
+                'stereo_pairs': {},
+                'camera_poses': {},
+                'system_parameters': {}
+            }
+            
+            # Save enhanced camera intrinsics
+            for cam_id, cal in self.camera_calibrations.items():
+                if cal.camera_matrix is not None:
+                    data['camera_intrinsics'][str(cam_id)] = {
+                        'camera_matrix': cal.camera_matrix.tolist(),
+                        'dist_coeffs': cal.dist_coeffs.tolist(),
+                        'image_size': list(cal.image_size) if cal.image_size else [],
+                        'calibration_error': cal.calibration_error,
+                        'focal_length_mm': getattr(cal, 'focal_length_mm', None),
+                        'fov_degrees': getattr(cal, 'fov_degrees', None),
+                        'plate_scale_arcsec_per_pixel': getattr(cal, 'plate_scale_arcsec_per_pixel', None)
+                    }
+            
+            # Save enhanced stereo data
+            for (cam1_id, cam2_id), stereo_data in self.stereo_calibrations.items():
+                if stereo_data.rotation_matrix is not None:
+                    pair_key = f"{cam1_id}_{cam2_id}"
+                    data['stereo_pairs'][pair_key] = {
+                        'rotation_matrix': stereo_data.rotation_matrix.tolist(),
+                        'translation_vector': stereo_data.translation_vector.tolist(),
+                        'baseline_distance_mm': stereo_data.baseline_distance,
+                        'convergence_angle_deg': stereo_data.convergence_angle,
+                        'stereo_error_pixels': stereo_data.stereo_error
+                    }
+            
+            # Save system parameters
+            if self.camera_system:
+                data['system_parameters'] = self.camera_system.to_dict()
+            
+            # Write comprehensive calibration file
+            output_path = filepath.replace('.json', '_enhanced.json')
+            with open(output_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            
+            logger.info(f"✅ Saved enhanced calibration with physical units to {output_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save enhanced calibration: {e}")
+    
     async def detect_charuco_parallel(
         self,
         frames: List[np.ndarray],
@@ -510,13 +691,21 @@ class MultiCameraCalibrationNode(Node):
                 logger.info(f"   Total corners: {total_corners}, Frames: {len(object_points)}")
                 
                 try:
-                    # Perform calibration
+                    # Perform calibration with enhanced flags for sub-pixel accuracy
+                    calibration_flags = (
+                        cv2.CALIB_RATIONAL_MODEL +        # Use 8-coefficient distortion model
+                        cv2.CALIB_THIN_PRISM_MODEL +      # Include thin prism distortion
+                        cv2.CALIB_TILTED_MODEL            # Include sensor tilt correction
+                    )
+                    
                     ret, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
                         object_points,
                         image_points,
                         image_size,
                         None,
-                        None
+                        None,
+                        flags=calibration_flags,
+                        criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
                     )
                     
                     if ret:
@@ -560,6 +749,14 @@ class MultiCameraCalibrationNode(Node):
             selected_frames):
             logger.info(f"🔗 === STARTING STEREO CALIBRATION ===")
             self.perform_stereo_calibration(selected_frames)
+        
+        # Enhance calibration with physical measurements
+        if self.sensor_specs:
+            self.enhance_calibration_with_physical_units()
+            
+            # Save enhanced calibration file with physical units
+            if self.config.calibration_file:
+                self.save_enhanced_calibration(self.config.calibration_file)
     
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Process synchronized frames from multiple cameras."""
