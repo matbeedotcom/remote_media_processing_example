@@ -165,13 +165,11 @@ class RAW10WebSocketClient:
             offer = await self.pc.createOffer()
             await self.pc.setLocalDescription(offer)
             
-            # Send offer via WebSocket
+            # Send offer via WebSocket (RemoteMedia server format)
             await self.ws.send_json({
                 "type": "offer",
-                "offer": {
-                    "sdp": self.pc.localDescription.sdp,
-                    "type": self.pc.localDescription.type
-                },
+                "sdp": self.pc.localDescription.sdp,
+                "offer_type": self.pc.localDescription.type,
                 "client_info": {
                     "camera_id": self.camera_num,
                     "raw_resolution": list(self.resolution),
@@ -200,10 +198,10 @@ class RAW10WebSocketClient:
                     data = json.loads(msg.data)
                     
                     if data.get("type") == "answer":
-                        # Set remote description
+                        # Set remote description (RemoteMedia server format)
                         answer = RTCSessionDescription(
-                            sdp=data["answer"]["sdp"],
-                            type=data["answer"]["type"]
+                            sdp=data["sdp"],
+                            type=data.get("answer_type", "answer")
                         )
                         await self.pc.setRemoteDescription(answer)
                         logger.info("Answer received and set")
