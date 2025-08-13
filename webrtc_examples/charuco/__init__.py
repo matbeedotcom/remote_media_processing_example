@@ -1,30 +1,61 @@
 """
-ChAruco calibration and perspective warping nodes for multi-camera systems.
+ChAruco Camera Calibration System
+
+A comprehensive multi-camera calibration system using ChAruco boards for precise 
+camera intrinsic and extrinsic calibration.
 """
 
-from .charuco_detection_node import (
-    CharucoDetectionNode,
-    CharucoConfig,
-    PoseResult
-)
+__version__ = "1.0.0"
 
-from .pose_diversity_selector_node import (
-    PoseDiversitySelectorNode,
-    CalibrationFrame
-)
-
-from .perspective_warp_node import (
-    PerspectiveWarpNode,
-    WarpConfig
-)
-
-from .multi_camera_calibration_node import (
+# Import main components for easier access
+from .calibration import (
+    FullCalibrationPipeline,
+    FullCalibrationConfig,
+    IndividualCameraCalibrationNode,
+    IndividualCalibrationConfig,
     MultiCameraCalibrationNode,
     MultiCameraConfig,
-    CameraCalibrationData
+    CameraCalibrationData,
+    StereoPairCalibration,
+    CameraPose,
+    CalibrationState,
+    CalibrationPhase,
+)
+
+from .nodes import (
+    CharucoDetectionNode,
+    CharucoConfig,
+    PoseResult,
+    PoseDiversitySelectorNode,
+    CalibrationFrame,
+    PerspectiveWarpNode,
+    WarpConfig,
+)
+
+from .utils import (
+    SensorSpecifications,
+    SensorDatabase,
+    CameraSystemConfig,
 )
 
 __all__ = [
+    # Version
+    '__version__',
+    
+    # Calibration pipeline
+    'FullCalibrationPipeline',
+    'FullCalibrationConfig',
+    'IndividualCameraCalibrationNode',
+    'IndividualCalibrationConfig',
+    'MultiCameraCalibrationNode',
+    'MultiCameraConfig',
+    'CameraCalibrationData',
+    'StereoPairCalibration',
+    'CameraPose',
+    'CalibrationState',
+    'CalibrationPhase',
+    
+    # Core nodes
     'CharucoDetectionNode',
     'CharucoConfig',
     'PoseResult',
@@ -32,7 +63,9 @@ __all__ = [
     'CalibrationFrame',
     'PerspectiveWarpNode',
     'WarpConfig',
-    'MultiCameraCalibrationNode',
-    'MultiCameraConfig',
-    'CameraCalibrationData'
+    
+    # Utils
+    'SensorSpecifications',
+    'SensorDatabase',
+    'CameraSystemConfig',
 ]

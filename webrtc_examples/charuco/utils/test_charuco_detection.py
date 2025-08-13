@@ -112,13 +112,27 @@ def test_charuco_detection(image_path, squares_x, squares_y, square_length, mark
 
 
 def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Test ChAruco detection on images")
+    parser.add_argument('--images', nargs='+', help='Paths to test images')
+    parser.add_argument('--directory', help='Directory containing calibration results')
+    args = parser.parse_args()
+    
     # Test images
-    test_images = [
-        '/home/acidhax/dev/originals/remote_media/remote_media_processing_example/webrtc_examples/calibration_results_20250807_184400/camera_0_original.jpg',
-        '/home/acidhax/dev/originals/remote_media/remote_media_processing_example/webrtc_examples/calibration_results_20250807_184400/camera_1_original.jpg',
-        '/home/acidhax/dev/originals/remote_media/remote_media_processing_example/webrtc_examples/calibration_results_20250807_184400/camera_2_original.jpg',
-        '/home/acidhax/dev/originals/remote_media/remote_media_processing_example/webrtc_examples/calibration_results_20250807_184400/camera_3_original.jpg'
-    ]
+    if args.images:
+        test_images = args.images
+    elif args.directory:
+        # Look for camera images in directory
+        test_images = []
+        for i in range(4):
+            img_path = os.path.join(args.directory, f'camera_{i}_original.jpg')
+            if os.path.exists(img_path):
+                test_images.append(img_path)
+    else:
+        print("Please provide either --images or --directory argument")
+        print("Example: python test_charuco_detection.py --directory /path/to/calibration_results/")
+        return
     
     # Test configurations
     configs = [

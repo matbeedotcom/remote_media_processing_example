@@ -20,10 +20,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '..', 'remote_media_processing'))
 
 from remotemedia.core.node import Node
-from charuco_detection_node import CharucoDetectionNode, CharucoConfig, PoseResult
-from pose_diversity_selector_node import PoseDiversitySelectorNode, CalibrationFrame
-from perspective_warp_node import PerspectiveWarpNode, WarpConfig
-from sensor_config import SensorSpecifications, SensorDatabase, CameraSystemConfig
+from ..nodes.charuco_detection_node import CharucoDetectionNode, CharucoConfig, PoseResult
+from ..nodes.pose_diversity_selector_node import PoseDiversitySelectorNode, CalibrationFrame
+from ..nodes.perspective_warp_node import PerspectiveWarpNode, WarpConfig
+from ..utils.sensor_config import SensorSpecifications, SensorDatabase, CameraSystemConfig
 
 logger = logging.getLogger(__name__)
 

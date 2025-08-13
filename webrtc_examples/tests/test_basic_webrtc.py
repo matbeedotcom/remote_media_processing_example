@@ -20,7 +20,7 @@ from remotemedia.core.pipeline import Pipeline
 from remotemedia.core.node import Node
 from remotemedia.webrtc import WebRTCServer, WebRTCConfig
 from remotemedia.nodes import PassThroughNode
-from video_stream_analyzer import VideoStreamAnalyzer
+from utils.video_stream_analyzer import VideoStreamAnalyzer
 
 logging.basicConfig(
     level=logging.INFO,

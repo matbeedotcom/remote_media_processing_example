@@ -60,22 +60,22 @@ from remotemedia.webrtc import WebRTCServer, WebRTCConfig
 from remotemedia.nodes import PassThroughNode
 
 # Import enhanced calibration nodes
-from charuco_detection_node import CharucoDetectionNode, CharucoConfig
-from multi_camera_calibration_node import MultiCameraCalibrationNode, MultiCameraConfig
-from subpixel_refinement_node import SubPixelRefinementNode, RefinementConfig
-from image_registration_node import ImageRegistrationNode, RegistrationConfig
-from drizzle_calibration_node import DrizzleCalibrationNode, DrizzleCalibrationConfig
-from perspective_warp_node import PerspectiveWarpNode, WarpConfig
-from live_preview_node import LivePreviewNode, LivePreviewConfig
-from desktop_preview_node import DesktopPreviewNode, DesktopPreviewConfig
+from charuco.nodes.charuco_detection_node import CharucoDetectionNode, CharucoConfig
+from charuco.calibration.multi_camera_calibration_node import MultiCameraCalibrationNode, MultiCameraConfig
+from charuco.nodes.subpixel_refinement_node import SubPixelRefinementNode, RefinementConfig
+from charuco.nodes.image_registration_node import ImageRegistrationNode, RegistrationConfig
+from charuco.nodes.drizzle_calibration_node import DrizzleCalibrationNode, DrizzleCalibrationConfig
+from charuco.nodes.perspective_warp_node import PerspectiveWarpNode, WarpConfig
+from charuco.nodes.live_preview_node import LivePreviewNode, LivePreviewConfig
+from charuco.nodes.desktop_preview_node import DesktopPreviewNode, DesktopPreviewConfig
 
 # Import VLBI processing
-from vlbi.visibility_processor import VisibilityProcessor, ApertureSynthesisImager, create_baseline_vectors_from_calibration
-from sensor_config import SensorDatabase
+from charuco.vlbi.visibility_processor import VisibilityProcessor, ApertureSynthesisImager, create_baseline_vectors_from_calibration
+from charuco.utils.sensor_config import SensorDatabase
 
 # Import video processing nodes
-from video_quad_splitter_node import VideoQuadSplitterNode
-from frame_debug_node import FrameDebugNode
+from nodes.video_quad_splitter_node import VideoQuadSplitterNode
+from nodes.frame_debug_node import FrameDebugNode
 
 # Configure logging
 logging.basicConfig(

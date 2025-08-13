@@ -18,10 +18,10 @@ Features:
 - Web-based client interface
 
 Usage:
-    python webrtc_charuco_pipeline_server.py [options]
-    python webrtc_charuco_pipeline_server.py --host 0.0.0.0 --port 8081 --cameras 4
-    python webrtc_charuco_pipeline_server.py --calibration-file my_calibration.json
-    SERVER_HOST=192.168.1.100 python webrtc_charuco_pipeline_server.py
+    python webrtc_server.py [options]
+    python webrtc_server.py --host 0.0.0.0 --port 8081 --cameras 4
+    python webrtc_server.py --calibration-file my_calibration.json
+    SERVER_HOST=192.168.1.100 python webrtc_server.py
 
 Command line options:
     --host HOST              Server host address (default: 0.0.0.0)
@@ -50,16 +50,11 @@ from typing import Optional, Dict, Any
 import json
 import cv2
 import numpy as np
-from video_stream_analyzer import VideoStreamAnalyzer
+from ...utils.video_stream_analyzer import VideoStreamAnalyzer
 
 # Add project paths
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / "remote_media_processing"))
-
-# Add charuco module path
-charuco_path = Path(__file__).parent / "charuco"
-sys.path.insert(0, str(charuco_path))
 
 # Import RemoteMedia components
 from remotemedia.core.pipeline import Pipeline
@@ -67,14 +62,13 @@ from remotemedia.core.node import Node
 from remotemedia.webrtc import WebRTCServer, WebRTCConfig
 from remotemedia.nodes import PassThroughNode
 
-# Import ChAruco nodes
-from charuco_detection_node import CharucoDetectionNode, CharucoConfig
-from pose_diversity_selector_node import PoseDiversitySelectorNode
-from perspective_warp_node import PerspectiveWarpNode, WarpConfig
-from multi_camera_calibration_node import MultiCameraCalibrationNode, MultiCameraConfig
-from video_quad_splitter_node import VideoQuadSplitterNode, VideoQuadMergerNode
-from live_preview_node import LivePreviewNode, LivePreviewConfig
-from desktop_preview_node import DesktopPreviewNode, DesktopPreviewConfig
+# Import ChAruco nodes using relative imports
+from ..nodes.charuco_detection_node import CharucoDetectionNode, CharucoConfig
+from ..nodes.pose_diversity_selector_node import PoseDiversitySelectorNode
+from ..nodes.perspective_warp_node import PerspectiveWarpNode, WarpConfig
+from ..calibration.multi_camera_calibration_node import MultiCameraCalibrationNode, MultiCameraConfig
+from ..nodes.live_preview_node import LivePreviewNode, LivePreviewConfig
+from ..nodes.desktop_preview_node import DesktopPreviewNode, DesktopPreviewConfig
 
 # Configure logging
 logging.basicConfig(
